@@ -1,51 +1,45 @@
-import { motion, AnimatePresence } from 'motion/react';
+import { motion } from 'motion/react';
 import { useState, useEffect } from 'react';
 import { Target, Search, BarChart, FileText } from 'lucide-react';
+import { getModeLabel } from '../lib/analysis';
+import type { AnalysisSession, Mode } from '../types/analysis';
 
 interface LoadingProps {
-  mode: 'find' | 'compare' | 'source';
-  onComplete: () => void;
+  session: AnalysisSession;
 }
 
-export default function Loading({ mode, onComplete }: LoadingProps) {
+const steps: Record<Mode, Array<{ text: string; icon: typeof Target }>> = {
+  find: [
+    { text: '解析基准 ASIN 特征...', icon: Target },
+    { text: '扫描 Amazon 细分类目池...', icon: Search },
+    { text: '清洗非对抗性样本...', icon: BarChart },
+    { text: '生成竞品候选网络...', icon: FileText },
+  ],
+  compare: [
+    { text: '正在抓取 Sorftime 商品全貌...', icon: Target },
+    { text: '比对流量词分布结构...', icon: Search },
+    { text: '抽取评价痛点与正面特征...', icon: BarChart },
+    { text: '合成跨维度商业分析报告...', icon: FileText },
+  ],
+  source: [
+    { text: '降维 Amazon 特征为寻源词...', icon: Target },
+    { text: '匹配 1688 同款与平替供给...', icon: Search },
+    { text: '排查工厂资质与履约信号...', icon: BarChart },
+    { text: '生成供应链决策建议...', icon: FileText },
+  ],
+};
+
+export default function Loading({ session }: LoadingProps) {
   const [currentStep, setCurrentStep] = useState(0);
-
-  const steps = {
-    find: [
-      { text: "解析基准 ASIN 特征...", icon: Target },
-      { text: "扫描 Amazon 细分类目池...", icon: Search },
-      { text: "清洗非对抗性样本...", icon: BarChart },
-      { text: "生成竞品候选网络...", icon: FileText }
-    ],
-    compare: [
-      { text: "正在抓取 Sorftime 商品全貌...", icon: Target },
-      { text: "比对流量词分布结构...", icon: Search },
-      { text: "抽取评价痛点与正面特征...", icon: BarChart },
-      { text: "合成跨维度商业分析报告...", icon: FileText }
-    ],
-    source: [
-      { text: "降维 Amazon 特征为寻源词...", icon: Target },
-      { text: "匹配 1688 同款与平替供给...", icon: Search },
-      { text: "排查工厂资质与履约信号...", icon: BarChart },
-      { text: "生成供应链决策建议...", icon: FileText }
-    ]
-  };
-
-  const currentSteps = steps[mode];
+  const currentSteps = steps[session.mode];
 
   useEffect(() => {
-    let step = 0;
     const interval = setInterval(() => {
-      step += 1;
-      if (step < currentSteps.length) {
-        setCurrentStep(step);
-      } else {
-        clearInterval(interval);
-        setTimeout(onComplete, 500); // 驻留一下视觉
-      }
-    }, 800); // 每个步骤 800ms
+      setCurrentStep((current) => (current < currentSteps.length - 1 ? current + 1 : current));
+    }, 800);
+
     return () => clearInterval(interval);
-  }, [mode, currentSteps.length, onComplete]);
+  }, [currentSteps.length]);
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-slate-50 font-sans">
@@ -54,7 +48,7 @@ export default function Loading({ mode, onComplete }: LoadingProps) {
           <motion.div 
             animate={{ 
               scale: [1, 1.2, 1], 
-              rotateCurve: [0, 180, 360],
+              rotate: [0, 180, 360],
               filter: ['hue-rotate(0deg)', 'hue-rotate(90deg)', 'hue-rotate(0deg)']
             }}
             transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
@@ -62,6 +56,15 @@ export default function Loading({ mode, onComplete }: LoadingProps) {
           >
             <div className="w-8 h-8 rounded-full border-2 border-white/50 border-t-white animate-spin" />
           </motion.div>
+        </div>
+
+        <div className="mb-8 text-center">
+          <div className="text-sm font-semibold text-slate-500">
+            {getModeLabel(session.mode)}
+          </div>
+          <div className="mt-2 text-xl font-semibold text-slate-900">
+            {session.asins.join(' / ')}
+          </div>
         </div>
         
         <div className="space-y-4">

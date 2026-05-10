@@ -1,30 +1,31 @@
-import { useState } from 'react';
+import { useState, type FormEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Search, ChevronRight, Target, BarChart2, PackageSearch } from 'lucide-react';
-
-export type Mode = 'find' | 'compare' | 'source';
+import { buildAnalysisSession, parseAnalysisInput } from '../lib/analysis';
+import type { AnalysisSession, Mode } from '../types/analysis';
 
 interface HomeProps {
-  onAnalyze: (mode: Mode, query: string) => void;
+  onAnalyze: (session: AnalysisSession) => void;
+  serverError?: string | null;
 }
 
-export default function Home({ onAnalyze }: HomeProps) {
+const modes = [
+  { id: 'find' as const, label: '找竞对', icon: Target, placeholder: '输入 1 个 ASIN 或 Amazon 链接...' },
+  { id: 'compare' as const, label: '竞对分析', icon: BarChart2, placeholder: '输入 2 个或多个 ASIN 进行对比...' },
+  { id: 'source' as const, label: '去寻源', icon: PackageSearch, placeholder: '输入 1 个 ASIN 或 Amazon 链接...' },
+];
+
+export default function Home({ onAnalyze, serverError }: HomeProps) {
   const [mode, setMode] = useState<Mode>('compare');
   const [query, setQuery] = useState('');
   const [isFocused, setIsFocused] = useState(false);
+  const currentMode = modes.find((item) => item.id === mode)!;
+  const parsed = parseAnalysisInput(mode, query);
 
-  const modes = [
-    { id: 'find', label: '找竞对', icon: Target, placeholder: '输入 1 个 ASIN 获取竞对清单...' },
-    { id: 'compare', label: '竞对分析', icon: BarChart2, placeholder: '输入 2 个或多个 ASIN 进行对比...' },
-    { id: 'source', label: '去寻源', icon: PackageSearch, placeholder: '输入 1 个 ASIN 查找 1688 相似供给...' },
-  ] as const;
-
-  const currentMode = modes.find((m) => m.id === mode)!;
-
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (query.trim()) {
-      onAnalyze(mode, query.trim());
+    if (parsed.isValid) {
+      onAnalyze(buildAnalysisSession(mode, query));
     }
   };
 
@@ -129,7 +130,8 @@ export default function Home({ onAnalyze }: HomeProps) {
                   animate={{ opacity: 1, scale: 1 }}
                   exit={{ opacity: 0, scale: 0.8 }}
                   type="submit"
-                  className="mr-2 p-3 rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors shadow-sm"
+                  disabled={!parsed.isValid}
+                  className="mr-2 p-3 rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors shadow-sm disabled:bg-slate-300 disabled:text-slate-500 disabled:hover:bg-slate-300"
                 >
                   <ChevronRight className="w-5 h-5" />
                 </motion.button>
@@ -141,9 +143,12 @@ export default function Home({ onAnalyze }: HomeProps) {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.6, duration: 1 }}
-            className="mt-6 text-center text-sm text-slate-400 font-medium"
+            className="mt-6 text-center text-sm font-medium"
           >
-            按回车键开始分析
+            <p className={parsed.error || serverError ? 'text-amber-600' : 'text-slate-400'}>
+              {parsed.error ?? serverError ?? parsed.helperText}
+            </p>
+            <p className="mt-2 text-slate-400">按回车键开始分析</p>
           </motion.div>
         </form>
       </motion.div>

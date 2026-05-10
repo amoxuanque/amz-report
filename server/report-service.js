@@ -1,0 +1,1009 @@
+import { callSorftimeTool } from './sorftime-client.js';
+
+const NAV_ITEMS = [
+  { id: '产品卡', label: '产品卡' },
+  { id: '核心对比', label: '核心对比' },
+  { id: '流量与关键词', label: '流量与关键词' },
+  { id: '执行建议', label: '执行建议' },
+];
+
+const SCENARIO_HINTS = [
+  'diffuser',
+  'curly',
+  'curl',
+  'travel',
+  'women',
+  'thick',
+  'comb',
+  'ionic',
+  'quiet',
+  'lightweight',
+];
+
+const REVIEW_THEMES = [
+  { label: '干发速度', patterns: [/fast dry/i, /dry.*fast/i, /dries.*fast/i, /quick dry/i] },
+  { label: '轻量手感', patterns: [/lightweight/i, /light weight/i, /light\b/i] },
+  { label: '卷发/扩散罩场景', patterns: [/curly/i, /curl/i, /diffuser/i] },
+  { label: '抗毛躁/顺滑度', patterns: [/frizz/i, /frizzy/i, /smooth/i, /shine/i] },
+  { label: '附件与扣位体验', patterns: [/attachment/i, /nozzle/i, /comb/i, /diffuser/i] },
+  { label: '噪音控制', patterns: [/quiet/i, /noise/i, /loud/i] },
+  { label: '安全/过热风险', patterns: [/burn/i, /smell/i, /spark/i, /fire/i, /hazard/i, /overheat/i] },
+  { label: '耐久与可靠性', patterns: [/broke/i, /broken/i, /stopped/i, /stop working/i, /durable/i, /last/i] },
+];
+
+function safeJsonParse(text, fallback = null) {
+  if (!text) return fallback;
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+    return fallback;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch (error) {
+    return fallback;
+  }
+}
+
+function toNumber(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const normalized = String(value).replace(/[^\d.-]/g, '');
+  if (!normalized) {
+    return null;
+  }
+
+  const parsed = Number(normalized);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function parsePercent(value) {
+  const parsed = toNumber(value);
+  return parsed === null ? null : parsed;
+}
+
+function extractNumberAfterColon(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const matched = String(value).match(/[:：]\s*([\d.]+%?)/);
+  if (matched?.[1]) {
+    return matched[1].includes('%')
+      ? parsePercent(matched[1])
+      : toNumber(matched[1]);
+  }
+
+  return toNumber(value);
+}
+
+function formatNumber(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return '未知';
+  }
+
+  return new Intl.NumberFormat('en-US').format(Number(value));
+}
+
+function formatCurrency(value, currency = '$') {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return '未知';
+  }
+
+  return `${currency}${Number(value).toFixed(2)}`;
+}
+
+function formatPercent(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return '未知';
+  }
+
+  return `${Number(value).toFixed(2)}%`;
+}
+
+function formatDate(dateString) {
+  if (!dateString) {
+    return '未知';
+  }
+
+  return dateString;
+}
+
+function readLabel(text, label) {
+  const match = text.match(new RegExp(`${label}：([^\\r\\n]+)`));
+  return match?.[1]?.trim() ?? null;
+}
+
+function parseEmbeddedJson(text, label) {
+  const match = text.match(new RegExp(`${label}：(\\{.+?\\})(?:；|\\r|\\n|$)`));
+  return safeJsonParse(match?.[1], {});
+}
+
+function parseProductDetail(text, asinHint) {
+  const monthlySales = text.match(/月销量：(?:月销量：)?([\d.]+)/)?.[1];
+  const monthlyRevenue = text.match(/月销额：(?:月销额：)?([\d.]+)/)?.[1];
+  const mainCategory = text.match(/所属大类：(.+?)（排名:(\d+)）/);
+  const subCategory = text.match(/所属细分类目：(.+?)（排名:(\d+)）/);
+
+  return {
+    asin: readLabel(text, '产品ASIN码') || asinHint,
+    title: readLabel(text, '标题'),
+    image: readLabel(text, '主图'),
+    price: toNumber(readLabel(text, '价格')),
+    coupon: toNumber(readLabel(text, '优惠券')) || 0,
+    rating: toNumber(readLabel(text, '星级')),
+    reviewCount: toNumber(readLabel(text, '评论数')),
+    brand: readLabel(text, '品牌'),
+    nodeId: readLabel(text, '所属nodeid'),
+    seller: readLabel(text, '卖家名称'),
+    sellerSource: readLabel(text, '卖家来源'),
+    category: readLabel(text, '分类'),
+    listedAt: readLabel(text, '上架时间'),
+    daysLive: toNumber(readLabel(text, '已上架天数')),
+    variations: toNumber(readLabel(text, '子体数')),
+    fbaFee: toNumber(readLabel(text, 'FBA费用')),
+    mainCategoryName: mainCategory?.[1] ?? null,
+    mainCategoryRank: toNumber(mainCategory?.[2]),
+    subCategoryName: subCategory?.[1] ?? null,
+    subCategoryRank: toNumber(subCategory?.[2]),
+    monthlySales: toNumber(monthlySales),
+    monthlyRevenue: toNumber(monthlyRevenue),
+    description: readLabel(text, '产品描述'),
+    grossMargin: toNumber(readLabel(text, '毛利')),
+    grossMarginRate: toNumber(readLabel(text, '毛利率')),
+    packageSizeCm: readLabel(text, '外包装尺寸（cm）'),
+    weightG: toNumber(readLabel(text, '重量（g）')),
+    attributes: parseEmbeddedJson(text, '属性'),
+    features: parseEmbeddedJson(text, '特征'),
+  };
+}
+
+function parseTrend(text) {
+  return text
+    .split(',')
+    .map((item) => item.trim())
+    .map((item) => {
+      const [label, rawValue] = item.split('=');
+      const value = toNumber(rawValue);
+      if (!label || value === null) {
+        return null;
+      }
+
+      return { label, value };
+    })
+    .filter(Boolean);
+}
+
+function parseCategoryReport(text) {
+  const payload = safeJsonParse(text, {});
+  const stats = payload['类目统计报告'] || {};
+  const topProducts = payload['Top100产品'] || [];
+
+  return {
+    topProducts,
+    stats: {
+      nodeId: stats.nodeid || null,
+      name: stats['类目名称'] || null,
+      top100Sales: toNumber(stats['top100产品月销量']),
+      top100Revenue: toNumber(stats['top100产品月销额']),
+      top3ProductShare: extractNumberAfterColon(stats['top3_product_sales_volume_share']),
+      top3BrandShare: extractNumberAfterColon(stats['top3_brands_sales_volume_share']),
+      top3SellerShare: extractNumberAfterColon(stats['top3_seller_sales_volume_share']),
+      amazonOwnedShare: extractNumberAfterColon(stats['amazonOwned_sales_volume_share']),
+      averagePrice: extractNumberAfterColon(stats['average_price']),
+      medianPrice: extractNumberAfterColon(stats['median_price']),
+      highReviewsShare: extractNumberAfterColon(stats['high_reviews_sales_volume_share']),
+      lowReviewsShare: extractNumberAfterColon(stats['low_reviews_sales_volume_share']),
+      firstBrand: stats['first_brand']?.replace('销量最大品牌:', '') || null,
+    },
+  };
+}
+
+function parsePosition(positionText) {
+  if (!positionText) {
+    return null;
+  }
+
+  const match = String(positionText).match(/第(\d+)页，第(\d+)\/\d+位/);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    page: Number(match[1]),
+    slot: Number(match[2]),
+  };
+}
+
+function parseTrafficTerms(text) {
+  const items = safeJsonParse(text, []);
+  return Array.isArray(items)
+    ? items.map((item) => ({
+        keyword: String(item['关键词'] || ''),
+        volume: toNumber(item['月搜索量']),
+        cpc: toNumber(item['推荐竞价']),
+        cpcRange: item['推荐竞价范围'] || null,
+        exposureType: item['曝光位置'] || null,
+        organicPosition: item['最近自然曝光位置'] || null,
+        adPosition: item['最近广告曝光位置'] || null,
+        organicRank: parsePosition(item['最近自然曝光位置']),
+        adRank: parsePosition(item['最近广告曝光位置']),
+      }))
+    : [];
+}
+
+function parseCompetitorKeywords(text) {
+  const items = safeJsonParse(text, []);
+  return Array.isArray(items)
+    ? items.map((item) => ({
+        keyword: String(item['关键词'] || ''),
+        volume: toNumber(item['关键词月搜索量']),
+        position: item['曝光位置'] || null,
+        rank: parsePosition(item['曝光位置']),
+      }))
+    : [];
+}
+
+function parseReviewList(text) {
+  const items = safeJsonParse(text, []);
+  return Array.isArray(items)
+    ? items.map((item) => ({
+        date: item['评论日期'] || null,
+        rating: toNumber(item['评星']),
+        title: item['标题'] || '',
+        body: item['评论'] || '',
+      }))
+    : [];
+}
+
+function parseKeywordDetail(text) {
+  const item = safeJsonParse(text, {});
+  return {
+    keyword: item['关键词'] || null,
+    monthlyVolume: toNumber(item['月搜索量']),
+    cpc: toNumber(item['推荐cpc竞价']),
+    peakMonth: item['词搜索量旺季'] || null,
+    resultCount: toNumber(item['搜索结果竞品数量']),
+  };
+}
+
+function parseKeywordExtends(text) {
+  const items = safeJsonParse(text, []);
+  return Array.isArray(items)
+    ? items.map((item) => ({
+        keyword: item['关键词'] || null,
+        monthlyVolume: toNumber(item['月搜索量']),
+        cpc: toNumber(item['cpc推荐竞价']),
+        seasonality: item['季节性'] || null,
+      }))
+    : [];
+}
+
+function parseSourcingItems(text) {
+  const items = safeJsonParse(text, []);
+  return Array.isArray(items)
+    ? items.map((item) => ({
+        title: item['标题'] || '',
+        image: item['主图'] || '',
+        url: item['URL'] || '',
+        price: toNumber(item['价格']),
+        seller: item['卖家'] || '',
+      }))
+    : [];
+}
+
+function sanitizeSourcingItems(items, searchName) {
+  const preferredTokens = tokenize(searchName);
+  const hardNoisePatterns = [
+    /定子|转子|铁芯|配件|电机/i,
+    /香薰|精油|熏香|diffuser香/i,
+    /认证|检测|维修|服务/i,
+  ];
+
+  return items
+    .map((item) => {
+      const title = item.title || '';
+      const overlap = tokenize(title).filter((token) => preferredTokens.includes(token)).length;
+      const isNoise = hardNoisePatterns.some((pattern) => pattern.test(title));
+
+      return {
+        ...item,
+        relevanceScore: overlap - (isNoise ? 5 : 0),
+      };
+    })
+    .filter((item) => item.relevanceScore >= 0)
+    .sort((left, right) => right.relevanceScore - left.relevanceScore);
+}
+
+function normalizeKeyword(keyword) {
+  return String(keyword || '').trim().toLowerCase();
+}
+
+function tokenize(text) {
+  return normalizeKeyword(text)
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function isBrandKeyword(keyword, brands) {
+  const normalized = normalizeKeyword(keyword);
+  return brands.some((brand) => {
+    const brandTokens = tokenize(brand);
+    return brandTokens.length > 0 && brandTokens.every((token) => normalized.includes(token));
+  });
+}
+
+function isScenarioKeyword(keyword) {
+  const normalized = normalizeKeyword(keyword);
+  return SCENARIO_HINTS.some((hint) => normalized.includes(hint));
+}
+
+function chooseKeywordSets(datasets) {
+  const brands = datasets.map((dataset) => dataset.detail.brand || '');
+  const genericPool = [];
+  const scenarioPool = [];
+
+  datasets.forEach((dataset) => {
+    dataset.competitorKeywords.forEach((item) => {
+      if (!item.keyword || !item.rank || item.rank.page > 2 || isBrandKeyword(item.keyword, brands)) {
+        return;
+      }
+
+      const targetPool = isScenarioKeyword(item.keyword) ? scenarioPool : genericPool;
+      targetPool.push(item);
+    });
+
+    dataset.trafficTerms.forEach((item) => {
+      if (!item.keyword || !item.volume || isBrandKeyword(item.keyword, brands)) {
+        return;
+      }
+
+      if (isScenarioKeyword(item.keyword)) {
+        scenarioPool.push({
+          keyword: item.keyword,
+          volume: item.volume,
+          rank: item.organicRank,
+          position: item.organicPosition,
+        });
+      }
+    });
+  });
+
+  const dedupe = (items) => {
+    const seen = new Set();
+    return items
+      .sort((left, right) => (right.volume || 0) - (left.volume || 0))
+      .filter((item) => {
+        const key = normalizeKeyword(item.keyword);
+        if (!key || seen.has(key)) {
+          return false;
+        }
+
+        seen.add(key);
+        return true;
+      });
+  };
+
+  return {
+    generic: dedupe(genericPool).slice(0, 3),
+    scenario: dedupe(scenarioPool).slice(0, 3),
+  };
+}
+
+function collectKeywordSeeds(keywordSets) {
+  return [...keywordSets.generic, ...keywordSets.scenario]
+    .map((item) => item.keyword)
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+async function fetchKeywordIntel(site, keywordSeeds) {
+  const uniqueKeywords = [...new Set(keywordSeeds)].slice(0, 3);
+  const details = await Promise.all(
+    uniqueKeywords.map(async (keyword) => {
+      const [detailTool, extendTool] = await Promise.all([
+        callSorftimeTool('keyword_detail', {
+          keyword,
+          keywordSupportSite: site,
+        }),
+        callSorftimeTool('keyword_extends', {
+          keyword,
+          keywordSupportSite: site,
+          page: 1,
+        }),
+      ]);
+
+      return {
+        keyword,
+        detail: parseKeywordDetail(detailTool.text),
+        extends: parseKeywordExtends(extendTool.text),
+      };
+    }),
+  );
+
+  return details;
+}
+
+async function fetchProductDataset(asin, site) {
+  const [detailTool, positiveReviewsTool, negativeReviewsTool, trendTool, trafficTool, competitorKeywordsTool] =
+    await Promise.all([
+      callSorftimeTool('product_detail', { asin, amzSite: site }),
+      callSorftimeTool('product_reviews', { asin, amzSite: site, reviewType: 'Positive' }),
+      callSorftimeTool('product_reviews', { asin, amzSite: site, reviewType: 'Negative' }),
+      callSorftimeTool('product_trend', { asin, amzSite: site, productTrendType: 'SalesVolume' }),
+      callSorftimeTool('product_traffic_terms', { asin, amzSite: site, page: 1 }),
+      callSorftimeTool('competitor_product_keywords', { asin, keywordSupportSite: site, page: 1 }),
+    ]);
+
+  return {
+    detail: parseProductDetail(detailTool.text, asin),
+    positiveReviews: parseReviewList(positiveReviewsTool.text),
+    negativeReviews: parseReviewList(negativeReviewsTool.text),
+    trend: parseTrend(trendTool.text),
+    trafficTerms: parseTrafficTerms(trafficTool.text),
+    competitorKeywords: parseCompetitorKeywords(competitorKeywordsTool.text),
+  };
+}
+
+function summarizeReviewThemes(reviews) {
+  const joined = reviews
+    .slice(0, 40)
+    .map((review) => `${review.title} ${review.body}`)
+    .join('\n');
+
+  const hits = REVIEW_THEMES.map((theme) => {
+    const count = theme.patterns.reduce((sum, pattern) => sum + (joined.match(pattern)?.length || 0), 0);
+    const sample = reviews.find((review) =>
+      theme.patterns.some((pattern) => pattern.test(`${review.title} ${review.body}`)),
+    );
+
+    return {
+      label: theme.label,
+      count,
+      sampleTitle: sample?.title || '',
+    };
+  })
+    .filter((item) => item.count > 0)
+    .sort((left, right) => right.count - left.count);
+
+  return hits.slice(0, 3);
+}
+
+function buildProductDescription(detail, positiveThemes) {
+  const cleanPositiveThemes = positiveThemes.filter((theme) => theme.label !== '安全/过热风险');
+  const featureHighlights = Object.entries(detail.features || {})
+    .slice(0, 2)
+    .map(([label, score]) => `${label} ${score}`)
+    .join(' / ');
+
+  if (cleanPositiveThemes.length > 0) {
+    return `当前买点集中在 ${cleanPositiveThemes.map((theme) => theme.label).join('、')}。${featureHighlights ? `用户感知强项：${featureHighlights}。` : ''}`;
+  }
+
+  return `${detail.category || detail.subCategoryName || '该产品'}当前已拿到稳定市场反馈，可继续从价格、内容和差评点拆解。`;
+}
+
+function formatRank(detail) {
+  if (detail.subCategoryRank !== null && detail.subCategoryRank !== undefined) {
+    return `#${detail.subCategoryRank}`;
+  }
+
+  return '未知';
+}
+
+function buildProductCard(detail, positiveThemes) {
+  return {
+    asin: detail.asin,
+    title: detail.title || detail.asin,
+    brand: detail.brand || '未知',
+    seller: detail.seller || '未知',
+    rank: formatRank(detail),
+    description: buildProductDescription(detail, positiveThemes),
+    image: detail.image || '',
+    metrics: [
+      {
+        label: 'Price',
+        value: formatCurrency(detail.price),
+        sub: detail.coupon ? `Coupon: ${formatCurrency(detail.coupon)}` : 'No Coupon',
+      },
+      {
+        label: 'Rating',
+        value: detail.rating ? detail.rating.toFixed(1) : '未知',
+        sub: `${formatNumber(detail.reviewCount)} Reviews`,
+      },
+      {
+        label: 'Monthly Rev',
+        value: formatCurrency(detail.monthlyRevenue),
+        sub: `${formatNumber(detail.monthlySales)} Sales`,
+      },
+      {
+        label: 'Margin Signal',
+        value: formatPercent(detail.grossMarginRate),
+        sub: `FBA: ${formatCurrency(detail.fbaFee)}`,
+      },
+    ],
+  };
+}
+
+function compareByBetter(left, right, accessor, reverse = false) {
+  const leftValue = accessor(left);
+  const rightValue = accessor(right);
+  if (leftValue === null || leftValue === undefined) return 'right';
+  if (rightValue === null || rightValue === undefined) return 'left';
+  if (leftValue === rightValue) return undefined;
+  return reverse
+    ? leftValue < rightValue ? 'left' : 'right'
+    : leftValue > rightValue ? 'left' : 'right';
+}
+
+function buildComparisonRows(left, right, genericKeywordPair) {
+  const couponAdjustedLeft = left.detail.price !== null ? left.detail.price - (left.detail.coupon || 0) : null;
+  const couponAdjustedRight = right.detail.price !== null ? right.detail.price - (right.detail.coupon || 0) : null;
+
+  return [
+    {
+      title: '价格与促销',
+      val1: `${formatCurrency(left.detail.price)}${left.detail.coupon ? ` + ${formatCurrency(left.detail.coupon)} 券` : ''}`,
+      val2: `${formatCurrency(right.detail.price)}${right.detail.coupon ? ` + ${formatCurrency(right.detail.coupon)} 券` : ''}`,
+      desc: `券后价约 ${formatCurrency(couponAdjustedLeft)} vs ${formatCurrency(couponAdjustedRight)}，先看谁更能支撑客单而不是谁绝对更便宜。`,
+      highlight: compareByBetter(left, right, (dataset) => dataset.detail.price, true),
+    },
+    {
+      title: '星级与评论',
+      val1: `${left.detail.rating?.toFixed(1) || '未知'} / ${formatNumber(left.detail.reviewCount)}`,
+      val2: `${right.detail.rating?.toFixed(1) || '未知'} / ${formatNumber(right.detail.reviewCount)}`,
+      desc: '评分看即时满意度，评论量看护城河厚度，两者不能只看一个。',
+      highlight: compareByBetter(left, right, (dataset) => dataset.detail.reviewCount),
+    },
+    {
+      title: '月销额 / 月销量',
+      val1: `${formatCurrency(left.detail.monthlyRevenue)} / ${formatNumber(left.detail.monthlySales)}`,
+      val2: `${formatCurrency(right.detail.monthlyRevenue)} / ${formatNumber(right.detail.monthlySales)}`,
+      desc: '这是当前成交能力最直观的读数，决定谁是现阶段市场主导者。',
+      highlight: compareByBetter(left, right, (dataset) => dataset.detail.monthlyRevenue),
+    },
+    {
+      title: '类目排名 / 上架天数',
+      val1: `${formatRank(left.detail)} / ${formatNumber(left.detail.daysLive)} 天`,
+      val2: `${formatRank(right.detail)} / ${formatNumber(right.detail.daysLive)} 天`,
+      desc: '排名看当前位置，上架时长看沉淀速度和历史包袱。',
+      highlight: compareByBetter(left, right, (dataset) => dataset.detail.subCategoryRank, true),
+    },
+    {
+      title: 'FBA / 毛利率',
+      val1: `${formatCurrency(left.detail.fbaFee)} / ${formatPercent(left.detail.grossMarginRate)}`,
+      val2: `${formatCurrency(right.detail.fbaFee)} / ${formatPercent(right.detail.grossMarginRate)}`,
+      desc: '低 FBA 不一定赢，但更高毛利率意味着广告和促销空间更大。',
+      highlight: compareByBetter(left, right, (dataset) => dataset.detail.grossMarginRate),
+    },
+    {
+      title: '核心泛词自然位',
+      val1: genericKeywordPair?.leftLabel || '样本不足',
+      val2: genericKeywordPair?.rightLabel || '样本不足',
+      desc: genericKeywordPair
+        ? `以 ${genericKeywordPair.keyword} 作为观察窗，谁的自然位更前，谁对免费流量更有控制力。`
+        : '当前没有足够稳定的泛词样本可做自然位对比。',
+      highlight: genericKeywordPair?.winner,
+    },
+  ];
+}
+
+function findKeywordForDataset(dataset, keyword) {
+  return (
+    dataset.competitorKeywords.find((item) => normalizeKeyword(item.keyword) === normalizeKeyword(keyword)) ||
+    dataset.trafficTerms.find((item) => normalizeKeyword(item.keyword) === normalizeKeyword(keyword))
+  );
+}
+
+function buildGenericKeywordPair(left, right, keywordSets) {
+  const keyword = keywordSets.generic[0]?.keyword;
+  if (!keyword) {
+    return null;
+  }
+
+  const leftTerm = findKeywordForDataset(left, keyword);
+  const rightTerm = findKeywordForDataset(right, keyword);
+
+  if (!leftTerm && !rightTerm) {
+    return null;
+  }
+
+  const leftRank = leftTerm?.rank || leftTerm?.organicRank;
+  const rightRank = rightTerm?.rank || rightTerm?.organicRank;
+  const winner =
+    leftRank && rightRank
+      ? leftRank.page === rightRank.page && leftRank.slot === rightRank.slot
+        ? undefined
+        : leftRank.page < rightRank.page || (leftRank.page === rightRank.page && leftRank.slot < rightRank.slot)
+          ? 'left'
+          : 'right'
+      : leftRank
+        ? 'left'
+        : rightRank
+          ? 'right'
+          : undefined;
+
+  return {
+    keyword,
+    leftLabel: leftTerm?.position || leftTerm?.organicPosition || '未进样本',
+    rightLabel: rightTerm?.position || rightTerm?.organicPosition || '未进样本',
+    winner,
+  };
+}
+
+function buildTrafficColumns(mode, left, right, keywordSets, sourcing) {
+  const genericTerms = keywordSets.generic.slice(0, 3).map((item) => {
+    const leftTerm = findKeywordForDataset(left, item.keyword);
+    const rightTerm = findKeywordForDataset(right, item.keyword);
+    return `${item.keyword}: ${left.detail.brand} [${leftTerm?.position || leftTerm?.organicPosition || '未进样本'}], ${right.detail.brand} [${rightTerm?.position || rightTerm?.organicPosition || '未进样本'}]`;
+  });
+
+  if (mode === 'source' && sourcing) {
+    const prices = sourcing.items
+      .map((item) => item.price)
+      .filter((value) => value !== null && value !== undefined);
+    const minPrice = prices.length ? Math.min(...prices) : null;
+    const maxPrice = prices.length ? Math.max(...prices) : null;
+
+    return [
+      {
+        eyebrow: '泛词自然位',
+        title: genericTerms.length ? `${left.detail.brand} / ${right.detail.brand} 泛词对比` : '泛词样本不足',
+        points: genericTerms.length ? genericTerms : ['当前没有足够稳定的泛词样本。'],
+      },
+      {
+        eyebrow: '1688 相似供给',
+        title: prices.length ? `样本价格带约 ¥${minPrice} - ¥${maxPrice}` : '1688 样本不足',
+        accent: true,
+        points: [
+          `搜索词：${sourcing.searchName}`,
+          sourcing.items[0] ? `样本 1：${sourcing.items[0].title}` : '暂无样本 1',
+          sourcing.items[1] ? `样本 2：${sourcing.items[1].title}` : '暂无样本 2',
+        ],
+      },
+    ];
+  }
+
+  const scenarioTerms = keywordSets.scenario.slice(0, 3).map((item) => {
+    const leftTerm = findKeywordForDataset(left, item.keyword);
+    const rightTerm = findKeywordForDataset(right, item.keyword);
+    const leftExposure = leftTerm?.organicPosition || leftTerm?.position || leftTerm?.adPosition || '未进样本';
+    const rightExposure = rightTerm?.organicPosition || rightTerm?.position || rightTerm?.adPosition || '未进样本';
+    return `${item.keyword}: ${left.detail.brand} [${leftExposure}], ${right.detail.brand} [${rightExposure}]`;
+  });
+
+  return [
+    {
+      eyebrow: '泛词自然位',
+      title: genericTerms.length ? '谁更稳住免费流量' : '泛词样本不足',
+      points: genericTerms.length ? genericTerms : ['当前没有足够稳定的泛词样本。'],
+    },
+    {
+      eyebrow: '场景词与转化意图',
+      title: scenarioTerms.length ? '谁更能吃到高意图词' : '场景词样本不足',
+      accent: true,
+      points: scenarioTerms.length ? scenarioTerms : ['当前没有足够稳定的场景词样本。'],
+    },
+  ];
+}
+
+function buildTrafficInsight(mode, categoryStats, keywordIntel, sourcing) {
+  const topKeyword = keywordIntel[0]?.detail;
+  const categoryLine = categoryStats
+    ? `类目 Top100 月销量约 ${formatNumber(categoryStats.top100Sales)}，中位价 ${formatCurrency(categoryStats.medianPrice)}，Top3 产品销量占比 ${formatPercent(categoryStats.top3ProductShare)}。`
+    : '当前类目环境样本不足。';
+  const keywordLine = topKeyword
+    ? `核心词 ${topKeyword.keyword} 月搜索量 ${formatNumber(topKeyword.monthlyVolume)}，推荐 CPC ${formatCurrency(topKeyword.cpc)}，旺季在 ${topKeyword.peakMonth || '未知'}。`
+    : '当前关键词细节样本不足。';
+
+  if (mode === 'source' && sourcing) {
+    const prices = sourcing.items
+      .map((item) => item.price)
+      .filter((value) => value !== null && value !== undefined);
+    const sourcingLine = prices.length
+      ? `1688 本次样本价格带约 ¥${Math.min(...prices)} - ¥${Math.max(...prices)}，只能作为供给锚点，不能直接当成工厂 shortlist。`
+      : '1688 这次没有形成可读价格带。';
+
+    return `${categoryLine} ${keywordLine} ${sourcingLine}`;
+  }
+
+  return `${categoryLine} ${keywordLine}`;
+}
+
+function buildActionCards(mode, left, right, keywordSets, categoryStats, sourcing) {
+  const leftRisks = summarizeReviewThemes(left.negativeReviews);
+  const rightRisks = summarizeReviewThemes(right.negativeReviews);
+  const topRisk = [...leftRisks, ...rightRisks].sort((a, b) => b.count - a.count)[0];
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword;
+  const medianPrice = categoryStats?.medianPrice;
+  const lowerPriceBrand =
+    left.detail.price !== null && right.detail.price !== null
+      ? left.detail.price < right.detail.price
+        ? left.detail.brand
+        : right.detail.brand
+      : left.detail.brand;
+
+  const cards = [
+    {
+      priority: 'P0',
+      title: topRisk ? `优先修正 ${topRisk.label}` : '优先修正高频差评点',
+      desc: topRisk
+        ? `真实评论里最密集的风险落在 ${topRisk.label}。先处理“${topRisk.sampleTitle || topRisk.label}”这类问题，再谈放量和提价。`
+        : '先回看近期负评，把安全、附件、耐久或毛躁等高频问题排干净，再继续放大流量。',
+      accentClass: 'border-t-red-500',
+    },
+    {
+      priority: 'P1',
+      title: scenarioKeyword ? `用 ${scenarioKeyword} 切高意图词` : '先切高意图场景词',
+      desc: scenarioKeyword
+        ? `围绕 ${scenarioKeyword} 重写标题前半句、主图卖点和广告结构，不要只在泛词上硬拼。`
+        : '优先从场景词、属性词和人群词切入，而不是直接在最大泛词上硬打。',
+      accentClass: 'border-t-orange-400',
+    },
+    {
+      priority: 'P2',
+      title: mode === 'source' ? '把 1688 结果当锚点，不当结论' : '把价格带和毛利空间一起看',
+      desc:
+        mode === 'source'
+          ? `当前 1688 结果只能帮助你判断价格带和供给方向。下一步要人工二筛相关性、认证和打样，再决定是否推进。`
+          : medianPrice
+            ? `当前类目中位价约 ${formatCurrency(medianPrice)}。如果你要切入，不是简单跟低价，而是要判断 ${lowerPriceBrand} 这类价格策略是否还有利润空间。`
+            : '进入类目前先同时看价格、FBA、CPC 和评论门槛，避免只看售价做决策。',
+      accentClass: 'border-t-blue-500',
+    },
+  ];
+
+  if (mode === 'source' && sourcing?.items.length) {
+    cards[2].desc = `${cards[2].desc} 当前已有 ${sourcing.items.length} 条相似供给样本，可直接进入样本筛选。`;
+  }
+
+  return cards;
+}
+
+function chooseWinner(left, right) {
+  if ((left.detail.monthlySales || 0) >= (right.detail.monthlySales || 0)) {
+    return { winner: left, other: right, side: 'left' };
+  }
+
+  return { winner: right, other: left, side: 'right' };
+}
+
+function buildTitle(mode, winner, other, keywordSets) {
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword;
+
+  if (mode === 'source') {
+    return `${winner.detail.brand || winner.detail.asin} 是当前 Amazon 基准盘，下一步看 1688 是否撑得住落地。`;
+  }
+
+  if (mode === 'find') {
+    return `${winner.detail.brand || winner.detail.asin} 是当前参考锚点，${other.detail.brand || other.detail.asin} 是最值得盯住的竞对。`;
+  }
+
+  if (scenarioKeyword) {
+    return `${winner.detail.brand || winner.detail.asin} 更强成交，${other.detail.brand || other.detail.asin} 在 ${scenarioKeyword} 等意图词上更值得细拆。`;
+  }
+
+  return `${winner.detail.brand || winner.detail.asin} 当前更强，${other.detail.brand || other.detail.asin} 仍有可学的自然流量结构。`;
+}
+
+function buildSummary(mode, left, right, categoryStats, extraNote) {
+  const leftName = `${left.detail.asin} / ${left.detail.brand || left.detail.title}`;
+  const rightName = `${right.detail.asin} / ${right.detail.brand || right.detail.title}`;
+  const categoryLine = categoryStats?.name
+    ? `同处 ${categoryStats.name} 类目，Top100 月销量约 ${formatNumber(categoryStats.top100Sales)}，中位价 ${formatCurrency(categoryStats.medianPrice)}。`
+    : '当前类目统计样本不足。';
+
+  const compareLine = `${leftName} 当前月销约 ${formatNumber(left.detail.monthlySales)}，月销额 ${formatCurrency(left.detail.monthlyRevenue)}；${rightName} 当前月销约 ${formatNumber(right.detail.monthlySales)}，月销额 ${formatCurrency(right.detail.monthlyRevenue)}。`;
+
+  const modeLine =
+    mode === 'source'
+      ? '这份报告先用 Amazon 真实市场数据判断谁是基准盘，再补 1688 供给锚点，避免只看供货价做错方向。'
+      : mode === 'find'
+        ? '这份报告先用真实类目和流量数据找到最值得盯的竞对，再给出下一步应跟踪的内容。'
+        : '这份报告直接对比两支 ASIN 的成交、评论、类目和流量结构，结论以实时 Sorftime 数据为准。';
+
+  return [modeLine, compareLine, categoryLine, extraNote].filter(Boolean).join(' ');
+}
+
+function buildHeroCards(mode, winner, other, categoryStats, keywordSets, sourcing, extraNote) {
+  const genericKeyword = keywordSets.generic[0];
+  const firstCard = {
+    label: 'Current Winner',
+    value: winner.detail.brand || winner.detail.asin,
+    desc: `月销量 ${formatNumber(winner.detail.monthlySales)}，月销额 ${formatCurrency(winner.detail.monthlyRevenue)}，细分类目排名 ${formatRank(winner.detail)}。`,
+  };
+
+  const secondCard =
+    mode === 'source' && sourcing
+      ? {
+          label: '1688 Anchor',
+          value: sourcing.items.length ? `${sourcing.items.length} 条样本` : '样本不足',
+          desc: sourcing.items.length
+            ? `搜索词 ${sourcing.searchName} 已拉到 ${sourcing.items.length} 条相似供给，先拿来判断价格带，不直接当工厂结论。`
+            : '本次 1688 样本不足，只能先以 Amazon 侧结论为主。',
+        }
+      : {
+          label: mode === 'find' ? 'Competitor Signal' : 'Challenger Signal',
+          value: other.detail.brand || other.detail.asin,
+          desc: genericKeyword
+            ? `${genericKeyword.keyword} 月搜索量 ${formatNumber(genericKeyword.volume)}。${other.detail.brand || other.detail.asin} 仍有自然位和内容结构上的可学样本。`
+            : `${other.detail.brand || other.detail.asin} 依然值得跟，因为它代表了类目里另一种打法。`,
+        };
+
+  const thirdCard = {
+    label: 'Next Move',
+    value: categoryStats?.medianPrice ? `中位价 ${formatCurrency(categoryStats.medianPrice)}` : '先拆关键词和差评',
+    desc: extraNote || '下一步不要继续停留在演示原型，直接围绕类目门槛、关键词和差评点落具体动作。',
+  };
+
+  return [firstCard, secondCard, thirdCard];
+}
+
+function derive1688SearchName(detail, keywordSets) {
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword;
+  const categorySeed = normalizeKeyword(detail.category || detail.subCategoryName || 'hair dryer');
+  if (scenarioKeyword) {
+    if (categorySeed && !normalizeKeyword(scenarioKeyword).includes(categorySeed)) {
+      return `${categorySeed} ${normalizeKeyword(scenarioKeyword)}`.trim();
+    }
+
+    return scenarioKeyword;
+  }
+
+  const genericKeyword = keywordSets.generic[0]?.keyword;
+  if (genericKeyword) {
+    return genericKeyword;
+  }
+
+  return `${detail.category || detail.subCategoryName || detail.title}`.split(',')[0].toLowerCase();
+}
+
+function pickBestCompetitor(seedDetail, categoryReport) {
+  const seedTokens = new Set(tokenize(`${seedDetail.title || ''} ${seedDetail.category || ''}`));
+  const seedBrand = normalizeKeyword(seedDetail.brand);
+  const seedPrice = seedDetail.price || 0;
+
+  return categoryReport.topProducts
+    .slice(0, 20)
+    .map((item) => {
+      const asin = String(item['ASIN'] || '').trim();
+      const title = String(item['标题'] || '');
+      const brand = String(item['品牌'] || '');
+      const overlap = tokenize(title).filter((token) => seedTokens.has(token)).length;
+      const price = toNumber(item['价格']);
+      const priceDistance = seedPrice && price ? Math.abs(seedPrice - price) / seedPrice : 1;
+      const sales = toNumber(item['月销量']);
+      return {
+        asin,
+        brand,
+        title,
+        score: overlap * 2 + Math.min((sales || 0) / 10000, 5) - priceDistance,
+        sales,
+      };
+    })
+    .filter((item) => item.asin && item.asin !== seedDetail.asin)
+    .filter((item) => normalizeKeyword(item.brand) !== seedBrand)
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+
+      return (right.sales || 0) - (left.sales || 0);
+    })[0];
+}
+
+function buildReportPayload({ mode, session, left, right, categoryReport, keywordIntel, sourcing, extraNote }) {
+  const winnerState = chooseWinner(left, right);
+  const keywordSets = chooseKeywordSets([left, right]);
+  const genericKeywordPair = buildGenericKeywordPair(left, right, keywordSets);
+
+  return {
+    session,
+    report: {
+      meta: {
+        date: new Date().toISOString().slice(0, 10),
+        marketplace: 'Amazon US',
+        source: 'Sorftime MCP',
+        mode,
+      },
+      title: buildTitle(mode, winnerState.winner, winnerState.other, keywordSets),
+      summary: buildSummary(mode, left, right, categoryReport.stats, extraNote),
+      heroCards: buildHeroCards(mode, winnerState.winner, winnerState.other, categoryReport.stats, keywordSets, sourcing, extraNote),
+      navItems: NAV_ITEMS,
+      products: [
+        buildProductCard(left.detail, summarizeReviewThemes(left.positiveReviews)),
+        buildProductCard(right.detail, summarizeReviewThemes(right.positiveReviews)),
+      ],
+      comparisonRows: buildComparisonRows(left, right, genericKeywordPair),
+      trafficColumns: buildTrafficColumns(mode, left, right, keywordSets, sourcing),
+      trafficInsight: buildTrafficInsight(mode, categoryReport.stats, keywordIntel, sourcing),
+      actionCards: buildActionCards(mode, left, right, keywordSets, categoryReport.stats, sourcing),
+    },
+  };
+}
+
+export async function buildLiveReport(sessionInput) {
+  const site = 'US';
+
+  if (sessionInput.mode === 'compare') {
+    const usedAsins = sessionInput.asins.slice(0, 2);
+    if (usedAsins.length < 2) {
+      throw new Error('竞对分析至少需要 2 个 ASIN。');
+    }
+
+    const [left, right] = await Promise.all(usedAsins.map((asin) => fetchProductDataset(asin, site)));
+    const primaryNodeId = left.detail.nodeId || right.detail.nodeId;
+    const categoryReportText = primaryNodeId
+      ? await callSorftimeTool('category_report', { nodeId: primaryNodeId, amzSite: site })
+      : null;
+    const categoryReport = categoryReportText ? parseCategoryReport(categoryReportText.text) : { topProducts: [], stats: {} };
+    const keywordIntel = await fetchKeywordIntel(site, collectKeywordSeeds(chooseKeywordSets([left, right])));
+    const extraNote =
+      sessionInput.asins.length > 2
+        ? `当前详细报告只对前两个 ASIN ${usedAsins.join(' / ')} 做深度比对，其余输入建议下一轮单独展开。`
+        : '';
+
+    return buildReportPayload({
+      mode: 'compare',
+      session: { ...sessionInput, asins: usedAsins, query: usedAsins.join(', ') },
+      left,
+      right,
+      categoryReport,
+      keywordIntel,
+      extraNote,
+    });
+  }
+
+  const seedAsin = sessionInput.asins[0];
+  const seed = await fetchProductDataset(seedAsin, site);
+  const categoryReportText = seed.detail.nodeId
+    ? await callSorftimeTool('category_report', { nodeId: seed.detail.nodeId, amzSite: site })
+    : null;
+  const categoryReport = categoryReportText ? parseCategoryReport(categoryReportText.text) : { topProducts: [], stats: {} };
+  const competitor = pickBestCompetitor(seed.detail, categoryReport);
+
+  if (!competitor?.asin) {
+    throw new Error('没有从当前类目里找到足够可信的竞对样本，请更换 ASIN 再试。');
+  }
+
+  const benchmark = await fetchProductDataset(competitor.asin, site);
+  const keywordSets = chooseKeywordSets([seed, benchmark]);
+  const keywordIntel = await fetchKeywordIntel(site, collectKeywordSeeds(keywordSets));
+
+  if (sessionInput.mode === 'find') {
+    return buildReportPayload({
+      mode: 'find',
+      session: { ...sessionInput, asins: [seedAsin, competitor.asin], query: `${seedAsin}, ${competitor.asin}` },
+      left: seed,
+      right: benchmark,
+      categoryReport,
+      keywordIntel,
+      extraNote: `本次自动锁定的第一竞对是 ${competitor.asin}，因为它和种子 ASIN 同类目、销量靠前且标题相似度更高。`,
+    });
+  }
+
+  const searchName = derive1688SearchName(seed.detail, keywordSets);
+  const sourcingTool = await callSorftimeTool('ali1688_similar_product', {
+    searchName,
+    page: 1,
+  });
+  const rawSourcingItems = parseSourcingItems(sourcingTool.text);
+  const sourcing = {
+    searchName,
+    items: sanitizeSourcingItems(rawSourcingItems, searchName),
+  };
+
+  return buildReportPayload({
+    mode: 'source',
+    session: { ...sessionInput, asins: [seedAsin, competitor.asin], query: `${seedAsin}, ${competitor.asin}` },
+    left: seed,
+    right: benchmark,
+    categoryReport,
+    keywordIntel,
+    sourcing,
+    extraNote: `Amazon 侧先拿 ${competitor.asin} 做对照，1688 侧再用 “${searchName}” 拉相似供给作为落地锚点。`,
+  });
+}

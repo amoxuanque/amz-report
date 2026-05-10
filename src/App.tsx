@@ -4,25 +4,36 @@
  */
 
 import { useState } from 'react';
-import Home, { Mode } from './components/Home';
+import Home from './components/Home';
 import Loading from './components/Loading';
 import Report from './components/Report';
+import { analyzeSession } from './lib/api';
+import type { AnalysisSession } from './types/analysis';
+import type { CompetitiveReport } from './types/report';
 
 type ViewState = 'home' | 'loading' | 'report';
 
 export default function App() {
   const [view, setView] = useState<ViewState>('home');
-  const [currentMode, setCurrentMode] = useState<Mode>('compare'); // Default, though unused in view atm
-  
-  const handleAnalyze = (mode: Mode, query: string) => {
-    // In a real app we'd trigger an API fetch here with mode and query.
-    // For the prototype, we move to the loading state simulating exactly what that mode does.
-    setCurrentMode(mode);
-    setView('loading');
-  };
+  const [session, setSession] = useState<AnalysisSession | null>(null);
+  const [report, setReport] = useState<CompetitiveReport | null>(null);
+  const [serverError, setServerError] = useState<string | null>(null);
 
-  const handleLoadingComplete = () => {
-    setView('report');
+  const handleAnalyze = async (nextSession: AnalysisSession) => {
+    setServerError(null);
+    setSession(nextSession);
+    setReport(null);
+    setView('loading');
+
+    try {
+      const payload = await analyzeSession(nextSession);
+      setSession(payload.session);
+      setReport(payload.report);
+      setView('report');
+    } catch (error) {
+      setServerError(error instanceof Error ? error.message : '分析失败，请稍后重试。');
+      setView('home');
+    }
   };
 
   const handleBackToHome = () => {
@@ -31,10 +42,11 @@ export default function App() {
 
   return (
     <>
-      {view === 'home' && <Home onAnalyze={handleAnalyze} />}
-      {view === 'loading' && <Loading mode={currentMode} onComplete={handleLoadingComplete} />}
-      {view === 'report' && <Report onBack={handleBackToHome} />}
+      {view === 'home' && <Home onAnalyze={handleAnalyze} serverError={serverError} />}
+      {view === 'loading' && session && <Loading session={session} />}
+      {view === 'report' && session && report && (
+        <Report onBack={handleBackToHome} session={session} report={report} />
+      )}
     </>
   );
 }
-
