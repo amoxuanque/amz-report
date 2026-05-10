@@ -1,0 +1,32 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+}
+
+body {
+  background-color: #f8fafc; /* bg-slate-50 */
+  color: #0f172a; /* text-slate-900 */
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+
+/* Redefine the visual styles of glass panels to solid cards to match theme */
+@utility glass-panel {
+  background-color: #ffffff;
+  border-bottom: 1px solid #e2e8f0; /* bg-slate-200 */
+}
+
+@utility glass-card {
+  background-color: #ffffff;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); /* shadow-sm */
+  border-radius: 0.75rem; /* rounded-xl */
+}
+
+/* Markdown prose tweaks if needed */
+.prose strong {
+  color: #0f172a;
+  font-weight: 700;
+}
