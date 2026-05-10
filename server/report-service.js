@@ -1185,6 +1185,140 @@ function buildCompareModeFocus(left, right, categoryStats, keywordSets) {
   };
 }
 
+function toFixedNumber(value, digits = 1) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return null;
+  }
+
+  return Number(value.toFixed(digits));
+}
+
+function buildCompareCommercialSnapshot(left, right, categoryStats, keywordSets) {
+  const salesRatio =
+    left.detail.monthlySales && right.detail.monthlySales
+      ? toFixedNumber(Math.max(left.detail.monthlySales, right.detail.monthlySales) / Math.max(1, Math.min(left.detail.monthlySales, right.detail.monthlySales)), 1)
+      : null;
+  const revenueRatio =
+    left.detail.monthlyRevenue && right.detail.monthlyRevenue
+      ? toFixedNumber(Math.max(left.detail.monthlyRevenue, right.detail.monthlyRevenue) / Math.max(1, Math.min(left.detail.monthlyRevenue, right.detail.monthlyRevenue)), 1)
+      : null;
+  const reviewRatio =
+    left.detail.reviewCount && right.detail.reviewCount
+      ? toFixedNumber(Math.max(left.detail.reviewCount, right.detail.reviewCount) / Math.max(1, Math.min(left.detail.reviewCount, right.detail.reviewCount)), 1)
+      : null;
+  const medianPrice = categoryStats?.medianPrice;
+  const priceGap =
+    left.detail.price !== null && right.detail.price !== null
+      ? toFixedNumber(Math.abs(left.detail.price - right.detail.price), 2)
+      : null;
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || null;
+
+  return {
+    salesRatio,
+    revenueRatio,
+    reviewRatio,
+    medianPrice,
+    priceGap,
+    scenarioKeyword,
+  };
+}
+
+function buildCompareTitle(left, right, keywordSets) {
+  const winnerState = chooseWinner(left, right);
+  const winner = winnerState.winner;
+  const other = winnerState.other;
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword;
+
+  if (scenarioKeyword) {
+    return `${winner.detail.brand || winner.detail.asin} 是当前成交基准，${other.detail.brand || other.detail.asin} 更值得从 ${scenarioKeyword} 词路切开。`;
+  }
+
+  return `${winner.detail.brand || winner.detail.asin} 是当前成交基准，${other.detail.brand || other.detail.asin} 是更适合拆打法的挑战者。`;
+}
+
+function buildCompareSummary(left, right, categoryStats, keywordSets) {
+  const winnerState = chooseWinner(left, right);
+  const winner = winnerState.winner;
+  const other = winnerState.other;
+  const snapshot = buildCompareCommercialSnapshot(left, right, categoryStats, keywordSets);
+  const genericKeyword = keywordSets.generic[0]?.keyword || '核心泛词';
+  const scenarioKeyword = snapshot.scenarioKeyword;
+  const factLine = `事实：${left.detail.brand || left.detail.asin} 当前月销约 ${formatNumber(left.detail.monthlySales)}、月销额 ${formatCurrency(left.detail.monthlyRevenue)}；${right.detail.brand || right.detail.asin} 当前月销约 ${formatNumber(right.detail.monthlySales)}、月销额 ${formatCurrency(right.detail.monthlyRevenue)}。`;
+  const categoryLine = categoryStats?.name
+    ? `类目事实：两者同处 ${categoryStats.name}，Top100 月销量约 ${formatNumber(categoryStats.top100Sales)}，中位价 ${formatCurrency(categoryStats.medianPrice)}，Top3 产品销量占比 ${formatPercent(categoryStats.top3ProductShare)}。`
+    : '类目事实：当前类目统计样本不足。';
+  const verdictLine = `判断：${winner.detail.brand || winner.detail.asin} 更像当前基准盘，因为它在成交规模、评论护城河或自然位上更完整；${other.detail.brand || other.detail.asin} 更值得拆的部分，不是绝对低价，而是 ${scenarioKeyword ? `${scenarioKeyword}` : genericKeyword} 这一侧的词路和内容打法。`;
+
+  return [factLine, categoryLine, verdictLine].join(' ');
+}
+
+function buildCompareHeroCards(left, right, categoryStats, keywordSets) {
+  const winnerState = chooseWinner(left, right);
+  const winner = winnerState.winner;
+  const other = winnerState.other;
+  const snapshot = buildCompareCommercialSnapshot(left, right, categoryStats, keywordSets);
+  const scenarioKeyword = snapshot.scenarioKeyword;
+
+  return [
+    {
+      label: 'Current Winner',
+      value: winner.detail.brand || winner.detail.asin,
+      desc: `当前月销 ${formatNumber(winner.detail.monthlySales)}、评论 ${formatNumber(winner.detail.reviewCount)}、细分类目排名 ${formatRank(winner.detail)}，更像现阶段市场基准。`,
+    },
+    {
+      label: 'Challenger Signal',
+      value: other.detail.brand || other.detail.asin,
+      desc:
+        scenarioKeyword
+          ? `${other.detail.brand || other.detail.asin} 不一定赢在总盘子，但在 ${scenarioKeyword} 这类高意图词和页面承诺上仍有可拆空间。`
+          : `${other.detail.brand || other.detail.asin} 更适合拿来拆词路、内容结构和进攻窗口。`,
+    },
+    {
+      label: 'Next Move',
+      value: scenarioKeyword || (categoryStats?.medianPrice ? `中位价 ${formatCurrency(categoryStats.medianPrice)}` : '先拆高意图词'),
+      desc:
+        scenarioKeyword
+          ? `先围绕 ${scenarioKeyword} 重写标题、主图和广告结构，再决定是否继续卷泛词。`
+          : `先看价格带、评论门槛和高频差评，再决定真正的切入路径。`,
+    },
+  ];
+}
+
+function buildCompareSectionCopy(left, right, categoryStats, keywordSets) {
+  const snapshot = buildCompareCommercialSnapshot(left, right, categoryStats, keywordSets);
+  const leftLabel = left.detail.brand || left.detail.asin;
+  const rightLabel = right.detail.brand || right.detail.asin;
+
+  return {
+    products: `先把 ${leftLabel} 和 ${rightLabel} 当成两种不同打法来看：一个代表当前成交基准，一个代表可拆的挑战路径。`,
+    comparison: `不是简单比参数，而是比谁更稳住了销量、评论护城河、自然位和利润空间。当前销量比约 ${snapshot.salesRatio ? `${snapshot.salesRatio}x` : '未知'}，评论护城河差约 ${snapshot.reviewRatio ? `${snapshot.reviewRatio}x` : '未知'}。`,
+    modeFocus: '这里不直接下“谁更好”的空结论，而是先回答：谁定义市场、谁提供攻击窗口、真正的约束条件是什么。',
+    category: `这个类目不能只看大盘子。进入难度实际由中位价 ${snapshot.medianPrice ? formatCurrency(snapshot.medianPrice) : '未知'}、头部集中度和高评论销量占比共同决定。`,
+    traffic: snapshot.scenarioKeyword
+      ? `核心问题不是谁能蹭到泛词，而是谁能把 ${snapshot.scenarioKeyword} 这种高意图词转成更高质量成交。`
+      : '核心问题不是谁能蹭到泛词，而是谁能把高意图词稳定转成成交。',
+    reviews: '评论区要拆成两件事：一是哪些点在支撑转化，二是哪些点会在放量时变成结构性风险。',
+    actions: '建议必须落到标题、主图、广告结构、产品修正和价格策略，不能停留在“优化一下 listing”。',
+    roadmap: '把当前判断转成 4 周动作，才算真的从“报告”进入“执行”。',
+  };
+}
+
+function buildCompareTrafficInsight(left, right, categoryStats, keywordIntel, keywordSets) {
+  const topKeyword = keywordIntel[0]?.detail;
+  const winnerState = chooseWinner(left, right);
+  const winner = winnerState.winner;
+  const other = winnerState.other;
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || '高意图词';
+
+  return [
+    `事实：${categoryStats?.name || '当前类目'} Top100 月销量约 ${formatNumber(categoryStats?.top100Sales)}，中位价 ${formatCurrency(categoryStats?.medianPrice)}。`,
+    topKeyword
+      ? `词路事实：${topKeyword.keyword} 月搜索量 ${formatNumber(topKeyword.monthlyVolume)}，推荐 CPC ${formatCurrency(topKeyword.cpc)}，旺季在 ${topKeyword.peakMonth || '未知'}。`
+      : '词路事实：当前关键词细节样本不足。',
+    `判断：${winner.detail.brand || winner.detail.asin} 更像泛词守盘方，${other.detail.brand || other.detail.asin} 更值得从 ${scenarioKeyword} 这种高意图词切开，而不是硬拼最大泛词。`,
+  ].join(' ');
+}
+
 function buildCompareComparisonRows(left, right, genericKeywordPair) {
   const baseRows = buildComparisonRows(left, right, genericKeywordPair);
 
@@ -1408,14 +1542,14 @@ function buildCompareModeReport({ session, left, right, categoryReport, keywordI
     session,
     report: {
       meta: buildBaseReportMeta('compare'),
-      title: buildTitle('compare', winnerState.winner, winnerState.other, keywordSets),
-      summary: buildSummary('compare', left, right, categoryReport.stats, extraNote),
+      title: buildCompareTitle(left, right, keywordSets),
+      summary: [buildCompareSummary(left, right, categoryReport.stats, keywordSets), extraNote].filter(Boolean).join(' '),
       labels: {
         left: left.detail.brand || left.detail.asin,
         right: right.detail.brand || right.detail.asin,
       },
-      sectionCopy: buildSectionCopy('compare', left, right, categoryReport.stats, keywordSets),
-      heroCards: buildHeroCards('compare', winnerState.winner, winnerState.other, categoryReport.stats, keywordSets),
+      sectionCopy: buildCompareSectionCopy(left, right, categoryReport.stats, keywordSets),
+      heroCards: buildCompareHeroCards(left, right, categoryReport.stats, keywordSets),
       navItems: buildNavItems('compare'),
       modeFocusTitle: modeFocus.title,
       modeFocusCards: modeFocus.cards,
@@ -1427,7 +1561,7 @@ function buildCompareModeReport({ session, left, right, categoryReport, keywordI
       categoryCards: buildCategoryCards(categoryReport.stats, left, right),
       categoryRows: buildCategoryRows(left, right, categoryReport.stats),
       trafficColumns: buildCompareTrafficColumns(left, right, keywordSets, keywordIntel),
-      trafficInsight: buildTrafficInsight('compare', categoryReport.stats, keywordIntel),
+      trafficInsight: buildCompareTrafficInsight(left, right, categoryReport.stats, keywordIntel, keywordSets),
       reviewBlocks: buildCompareReviewBlocks(left, right),
       actionCards: buildCompareActionCards(left, right, keywordSets, categoryReport.stats),
       roadmapSteps: buildCompareRoadmapSteps(left, right, keywordSets),
