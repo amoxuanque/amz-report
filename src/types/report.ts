@@ -48,6 +48,21 @@ export interface ReportActionCard {
   accentClass: string;
 }
 
+export interface ReportReviewBlock {
+  eyebrow: string;
+  title: string;
+  summary: string;
+  positives: string[];
+  negatives: string[];
+  opportunities: string[];
+}
+
+export interface ReportRoadmapStep {
+  phase: string;
+  title: string;
+  desc: string;
+}
+
 export interface CompetitiveReport {
   meta: {
     date: string;
@@ -57,11 +72,31 @@ export interface CompetitiveReport {
   };
   title: string;
   summary: string;
+  labels: {
+    left: string;
+    right: string;
+  };
+  sectionCopy: {
+    products: string;
+    comparison: string;
+    modeFocus?: string;
+    category: string;
+    traffic: string;
+    reviews: string;
+    actions: string;
+    roadmap: string;
+  };
   heroCards: ReportHeroCard[];
   navItems: ReportNavItem[];
+  modeFocusTitle?: string;
+  modeFocusCards?: ReportHeroCard[];
   products: ReportProduct[];
   comparisonRows: ReportComparisonRow[];
+  categoryCards: ReportHeroCard[];
+  categoryRows: ReportComparisonRow[];
   trafficColumns: ReportTrafficColumn[];
   trafficInsight: string;
+  reviewBlocks: ReportReviewBlock[];
   actionCards: ReportActionCard[];
+  roadmapSteps: ReportRoadmapStep[];
 }

@@ -2,7 +2,7 @@ import { motion } from 'motion/react';
 import { ArrowLeft } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { AnalysisSession } from '../types/analysis';
-import type { CompetitiveReport } from '../types/report';
+import type { CompetitiveReport, ReportComparisonRow, ReportHeroCard, ReportReviewBlock, ReportRoadmapStep } from '../types/report';
 
 interface ReportProps {
   onBack: () => void;
@@ -17,6 +17,7 @@ const variants = {
 
 export default function Report({ onBack, session, report }: ReportProps) {
   const sessionTitle = session.asins.length > 0 ? session.asins.join(' vs ') : report.title;
+
   return (
     <div className="min-h-screen pb-20">
       <div className="sticky top-0 z-50 bg-white border-b border-slate-200">
@@ -38,7 +39,7 @@ export default function Report({ onBack, session, report }: ReportProps) {
       <motion.main
         initial="hidden"
         animate="visible"
-        transition={{ staggerChildren: 0.1 }}
+        transition={{ staggerChildren: 0.08 }}
         className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 space-y-6"
       >
         <motion.section variants={variants} className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm relative overflow-hidden">
@@ -61,15 +62,7 @@ export default function Report({ onBack, session, report }: ReportProps) {
               ))}
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {report.heroCards.map((card) => (
-                <div key={card.label} className="bg-white border border-slate-200 rounded-lg p-5 shadow-sm relative group hover:bg-slate-50 transition-all">
-                  <div className="text-xs font-bold tracking-wider text-slate-400 uppercase mb-3">{card.label}</div>
-                  <div className="text-2xl font-semibold text-slate-900 mb-3">{card.value}</div>
-                  <p className="text-[13px] text-slate-600 leading-relaxed">{card.desc}</p>
-                </div>
-              ))}
-            </div>
+            <CardGrid cards={report.heroCards} />
           </div>
         </motion.section>
 
@@ -82,7 +75,7 @@ export default function Report({ onBack, session, report }: ReportProps) {
         </motion.nav>
 
         <motion.section variants={variants} id="产品卡" className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-          <SectionHeader title="产品卡" desc="先看两个 ASIN 的基础盘。同属 Hair Dryers 且功率 1875W，但一个是新锐爆款，一个是老牌基础款。" />
+          <SectionHeader title="产品卡" desc={report.sectionCopy.products} />
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
             {report.products.map((product) => (
@@ -116,35 +109,28 @@ export default function Report({ onBack, session, report }: ReportProps) {
           </div>
         </motion.section>
 
-        <motion.section variants={variants} id="核心对比" className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-          <SectionHeader title="核心数据对比" desc="重点不是谁参数更多，而是谁更能把“搜索、点击、转化、利润”串成闭环。" />
+        {report.modeFocusCards && report.modeFocusCards.length > 0 && (
+          <motion.section variants={variants} id={report.modeFocusTitle || '模式判断'} className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+            <SectionHeader title={report.modeFocusTitle || '模式判断'} desc={report.sectionCopy.modeFocus || report.sectionCopy.comparison} />
+            <CardGrid cards={report.modeFocusCards} />
+          </motion.section>
+        )}
 
-          <div className="overflow-x-auto -mx-8 md:mx-0 px-8 md:px-0">
-            <table className="w-full min-w-[800px] text-left border-collapse">
-              <thead>
-                <tr>
-                  <th className="py-4 px-4 text-xs font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200">维度</th>
-                  <th className="py-4 px-4 text-xs font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200">Wavytalk</th>
-                  <th className="py-4 px-4 text-xs font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200">REVLON</th>
-                  <th className="py-4 px-4 text-xs font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200">商业解读</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {report.comparisonRows.map((row) => (
-                  <tr key={row.title} className="group hover:bg-slate-50/50 transition-colors">
-                    <td className="py-3 px-4 text-sm font-semibold text-slate-900 align-top">{row.title}</td>
-                    <td className={`py-3 px-4 text-sm w-1/4 align-top ${row.highlight === 'left' ? 'text-green-600 font-bold' : 'text-slate-700'}`}>{row.val1}</td>
-                    <td className={`py-3 px-4 text-sm w-1/4 align-top ${row.highlight === 'right' ? 'text-green-600 font-bold' : 'text-slate-700'}`}>{row.val2}</td>
-                    <td className="py-3 px-4 text-[13px] text-slate-500 align-top leading-relaxed">{row.desc}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        <motion.section variants={variants} id="核心对比" className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <SectionHeader title="核心对比" desc={report.sectionCopy.comparison} />
+          <ComparisonTable rows={report.comparisonRows} leftLabel={report.labels.left} rightLabel={report.labels.right} />
+        </motion.section>
+
+        <motion.section variants={variants} id="类目环境" className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+          <SectionHeader title="类目环境" desc={report.sectionCopy.category} />
+          <div className="mb-6">
+            <CardGrid cards={report.categoryCards} />
           </div>
+          <ComparisonTable rows={report.categoryRows} leftLabel={report.labels.left} rightLabel={report.labels.right} />
         </motion.section>
 
         <motion.section variants={variants} id="流量与关键词" className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-          <SectionHeader title="流量与核心判断" desc="两者赢法完全不同。REVLON 靠泛词自然流量盘，Wavytalk 靠“泛词可见 + 场景词更会转 + 广告更积极”。" />
+          <SectionHeader title="流量与关键词" desc={report.sectionCopy.traffic} />
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
             {report.trafficColumns.map((column) => (
@@ -165,8 +151,17 @@ export default function Report({ onBack, session, report }: ReportProps) {
           </div>
         </motion.section>
 
+        <motion.section variants={variants} id="评价洞察" className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+          <SectionHeader title="评价洞察" desc={report.sectionCopy.reviews} />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {report.reviewBlocks.map((block) => (
+              <ReviewBlockView key={block.title} block={block} />
+            ))}
+          </div>
+        </motion.section>
+
         <motion.section variants={variants} id="执行建议" className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-          <SectionHeader title="可执行建议" desc="如果要做新进入者，以下属于 P0 级别的产品优化重点。" />
+          <SectionHeader title="执行建议" desc={report.sectionCopy.actions} />
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {report.actionCards.map((card) => (
@@ -174,6 +169,16 @@ export default function Report({ onBack, session, report }: ReportProps) {
                 <div className="text-lg font-semibold text-slate-900 mb-2">{card.priority}: {card.title}</div>
                 <p className="text-sm text-slate-600 leading-relaxed">{card.desc}</p>
               </div>
+            ))}
+          </div>
+        </motion.section>
+
+        <motion.section variants={variants} id="执行路径" className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+          <SectionHeader title="执行路径" desc={report.sectionCopy.roadmap} />
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {report.roadmapSteps.map((step) => (
+              <RoadmapCard key={`${step.phase}-${step.title}`} step={step} />
             ))}
           </div>
         </motion.section>
@@ -198,5 +203,93 @@ function Pill({ children }: { children: ReactNode }) {
     <span className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">
       {children}
     </span>
+  );
+}
+
+function CardGrid({ cards }: { cards: ReportHeroCard[] }) {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      {cards.map((card) => (
+        <div key={`${card.label}-${card.value}`} className="bg-white border border-slate-200 rounded-lg p-5 shadow-sm relative group hover:bg-slate-50 transition-all">
+          <div className="text-xs font-bold tracking-wider text-slate-400 uppercase mb-3">{card.label}</div>
+          <div className="text-2xl font-semibold text-slate-900 mb-3">{card.value}</div>
+          <p className="text-[13px] text-slate-600 leading-relaxed">{card.desc}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ComparisonTable({
+  rows,
+  leftLabel,
+  rightLabel,
+}: {
+  rows: ReportComparisonRow[];
+  leftLabel: string;
+  rightLabel: string;
+}) {
+  return (
+    <div className="overflow-x-auto -mx-8 md:mx-0 px-8 md:px-0">
+      <table className="w-full min-w-[800px] text-left border-collapse">
+        <thead>
+          <tr>
+            <th className="py-4 px-4 text-xs font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200">维度</th>
+            <th className="py-4 px-4 text-xs font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200">{leftLabel}</th>
+            <th className="py-4 px-4 text-xs font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200">{rightLabel}</th>
+            <th className="py-4 px-4 text-xs font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200">商业解读</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {rows.map((row) => (
+            <tr key={row.title} className="group hover:bg-slate-50/50 transition-colors">
+              <td className="py-3 px-4 text-sm font-semibold text-slate-900 align-top">{row.title}</td>
+              <td className={`py-3 px-4 text-sm w-1/4 align-top ${row.highlight === 'left' ? 'text-green-600 font-bold' : 'text-slate-700'}`}>{row.val1}</td>
+              <td className={`py-3 px-4 text-sm w-1/4 align-top ${row.highlight === 'right' ? 'text-green-600 font-bold' : 'text-slate-700'}`}>{row.val2}</td>
+              <td className="py-3 px-4 text-[13px] text-slate-500 align-top leading-relaxed">{row.desc}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ReviewBlockView({ block }: { block: ReportReviewBlock }) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+      <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">{block.eyebrow}</div>
+      <h3 className="text-xl font-semibold text-slate-900 mb-3">{block.title}</h3>
+      <p className="text-sm text-slate-600 leading-relaxed mb-5">{block.summary}</p>
+
+      <div className="space-y-4">
+        <ReviewList title="正向驱动" items={block.positives} accent="text-green-600" />
+        <ReviewList title="负向风险" items={block.negatives} accent="text-red-600" />
+        <ReviewList title="可转动作" items={block.opportunities} accent="text-blue-600" />
+      </div>
+    </div>
+  );
+}
+
+function ReviewList({ title, items, accent }: { title: string; items: string[]; accent: string }) {
+  return (
+    <div>
+      <div className={`text-xs font-bold uppercase tracking-wider mb-2 ${accent}`}>{title}</div>
+      <ul className="space-y-2 text-sm text-slate-600">
+        {items.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function RoadmapCard({ step }: { step: ReportRoadmapStep }) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+      <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">{step.phase}</div>
+      <h3 className="text-lg font-semibold text-slate-900 mb-3">{step.title}</h3>
+      <p className="text-sm text-slate-600 leading-relaxed">{step.desc}</p>
+    </div>
   );
 }

@@ -1,12 +1,5 @@
 import { callSorftimeTool } from './sorftime-client.js';
 
-const NAV_ITEMS = [
-  { id: '产品卡', label: '产品卡' },
-  { id: '核心对比', label: '核心对比' },
-  { id: '流量与关键词', label: '流量与关键词' },
-  { id: '执行建议', label: '执行建议' },
-];
-
 const SCENARIO_HINTS = [
   'diffuser',
   'curly',
@@ -30,6 +23,20 @@ const REVIEW_THEMES = [
   { label: '安全/过热风险', patterns: [/burn/i, /smell/i, /spark/i, /fire/i, /hazard/i, /overheat/i] },
   { label: '耐久与可靠性', patterns: [/broke/i, /broken/i, /stopped/i, /stop working/i, /durable/i, /last/i] },
 ];
+
+function buildNavItems(mode) {
+  const modeLabel = mode === 'compare' ? '模式判断' : mode === 'find' ? '锁定逻辑' : '寻源判断';
+  return [
+    { id: '产品卡', label: '产品卡' },
+    { id: modeLabel, label: modeLabel },
+    { id: '核心对比', label: '核心对比' },
+    { id: '类目环境', label: '类目环境' },
+    { id: '流量与关键词', label: '流量与关键词' },
+    { id: '评价洞察', label: '评价洞察' },
+    { id: '执行建议', label: '执行建议' },
+    { id: '执行路径', label: '执行路径' },
+  ];
+}
 
 function safeJsonParse(text, fallback = null) {
   if (!text) return fallback;
@@ -528,6 +535,47 @@ function buildProductCard(detail, positiveThemes) {
   };
 }
 
+function buildSectionCopy(mode, left, right, categoryStats, keywordSets, sourcing) {
+  const leftLabel = left.detail.brand || left.detail.asin;
+  const rightLabel = right.detail.brand || right.detail.asin;
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword;
+  const categoryName = categoryStats?.name || left.detail.subCategoryName || left.detail.category || '当前类目';
+
+  return {
+    products: `${leftLabel} 和 ${rightLabel} 都在 ${categoryName} 里拿到了真实成交，但一个更像当前基准盘，另一个更像可拆解的打法样本。`,
+    comparison:
+      mode === 'compare'
+        ? '这里不只看谁卖得多，而是拆成交、评论、排名、毛利和自然位，判断哪一侧的护城河更厚。'
+        : mode === 'find'
+          ? '先确认自动锁定的竞对为什么值得盯，再判断它到底是价格标杆、流量样本，还是内容样本。'
+          : 'Amazon 基准盘和供给端要一起看，否则只看 1688 低价，很容易选到转化差、风险高的错误方向。',
+    modeFocus:
+      mode === 'compare'
+        ? '这部分专门回答：当前谁定义了市场，另一侧还能从哪里切进去。'
+        : mode === 'find'
+          ? '这部分专门回答：为什么系统锁定了这支竞对，而不是只给你一个看起来相似的 ASIN。'
+          : '这部分专门回答：当前 Amazon 需求盘和 1688 供给盘能不能对得上。',
+    category: `${categoryName} 的进入难度不只由销量决定，还受价格带、头部集中度和评论门槛共同约束。`,
+    traffic:
+      mode === 'source' && sourcing
+        ? '这里同时看 Amazon 的需求词和 1688 的供给样本，判断“有人搜”与“有人做”是不是同一件事。'
+        : scenarioKeyword
+          ? `重点不是泛词有多大，而是谁更能稳住免费流量，以及谁在 ${scenarioKeyword} 这类高意图词上更占优。`
+          : '重点不是泛词有多大，而是谁更能稳住免费流量，以及谁的场景词结构更健康。',
+    reviews: `${leftLabel} 和 ${rightLabel} 的评论主题会直接决定下一步应该修产品、修页面，还是修投放。`,
+    actions:
+      mode === 'source'
+        ? '进入寻源阶段后，建议必须可落到打样、认证、筛厂和成本复核，不能停留在“有样本”这个层面。'
+        : '建议必须能直接落到标题、主图、广告结构和产品修正，而不是停留在泛泛的“优化一下”。',
+    roadmap:
+      mode === 'find'
+        ? '先把参考竞对盯准，再做拆解和跟踪，不要一上来就把它当成最终答案。'
+        : mode === 'source'
+          ? '先用 Amazon 验方向，再用 1688 验供给，最后才进入打样和成本核算。'
+          : '把当前报告拆成 2 到 4 周内可执行的动作，才算真的把结论落地。',
+  };
+}
+
 function compareByBetter(left, right, accessor, reverse = false) {
   const leftValue = accessor(left);
   const rightValue = accessor(right);
@@ -587,6 +635,80 @@ function buildComparisonRows(left, right, genericKeywordPair) {
         ? `以 ${genericKeywordPair.keyword} 作为观察窗，谁的自然位更前，谁对免费流量更有控制力。`
         : '当前没有足够稳定的泛词样本可做自然位对比。',
       highlight: genericKeywordPair?.winner,
+    },
+  ];
+}
+
+function buildCategoryCards(categoryStats, left, right) {
+  const medianPrice = categoryStats?.medianPrice;
+  const averagePrice = categoryStats?.averagePrice;
+  const topBrand = categoryStats?.firstBrand || right.detail.brand || left.detail.brand || '未知';
+
+  return [
+    {
+      label: 'Top100 月销量',
+      value: formatNumber(categoryStats?.top100Sales),
+      desc: `${categoryStats?.name || '当前类目'} 当前容量足够大，但不是低门槛市场。`,
+    },
+    {
+      label: '价格带',
+      value: medianPrice !== null && medianPrice !== undefined ? `中位价 ${formatCurrency(medianPrice)}` : formatCurrency(averagePrice),
+      desc:
+        medianPrice !== null && medianPrice !== undefined && averagePrice !== null && averagePrice !== undefined
+          ? `均价 ${formatCurrency(averagePrice)}，中位价更能代表主流成交带。`
+          : '当前价格带样本有限，先用已有类目统计做判断。',
+    },
+    {
+      label: '头部集中度',
+      value: formatPercent(categoryStats?.top3ProductShare),
+      desc: `Top3 产品销量占比 ${formatPercent(categoryStats?.top3ProductShare)}，说明头部是否已经吃掉大部分需求。`,
+    },
+    {
+      label: '最大品牌',
+      value: topBrand,
+      desc: '头部品牌样本能帮助判断这个类目更偏品牌驱动还是结构驱动。',
+    },
+  ];
+}
+
+function buildCategoryRows(left, right, categoryStats) {
+  const medianPrice = categoryStats?.medianPrice;
+  const leftGap = medianPrice !== null && medianPrice !== undefined && left.detail.price !== null
+    ? Math.abs(left.detail.price - medianPrice)
+    : null;
+  const rightGap = medianPrice !== null && medianPrice !== undefined && right.detail.price !== null
+    ? Math.abs(right.detail.price - medianPrice)
+    : null;
+
+  return [
+    {
+      title: '价格相对主流带',
+      val1: left.detail.price !== null && medianPrice ? `${formatCurrency(left.detail.price)} vs ${formatCurrency(medianPrice)}` : formatCurrency(left.detail.price),
+      val2: right.detail.price !== null && medianPrice ? `${formatCurrency(right.detail.price)} vs ${formatCurrency(medianPrice)}` : formatCurrency(right.detail.price),
+      desc: `相对类目中位价 ${medianPrice !== null && medianPrice !== undefined ? formatCurrency(medianPrice) : '未知'}，偏离主流带越远，就越依赖品牌、场景或内容去支撑转化。`,
+      highlight:
+        leftGap !== null && rightGap !== null
+          ? compareByBetter({ detail: { gap: leftGap } }, { detail: { gap: rightGap } }, (dataset) => dataset.detail.gap, true)
+          : undefined,
+    },
+    {
+      title: '评论门槛',
+      val1: `${formatNumber(left.detail.reviewCount)} / ${left.detail.rating?.toFixed(1) || '未知'}`,
+      val2: `${formatNumber(right.detail.reviewCount)} / ${right.detail.rating?.toFixed(1) || '未知'}`,
+      desc: `类目高评论销量占比 ${formatPercent(categoryStats?.highReviewsShare)}，评论量薄的一侧更容易在转化上吃亏。`,
+      highlight: compareByBetter(left, right, (dataset) => dataset.detail.reviewCount),
+    },
+    {
+      title: '头部品牌 / 卖家集中',
+      val1: left.detail.brand || '未知',
+      val2: right.detail.brand || '未知',
+      desc: `Top3 品牌销量占比 ${formatPercent(categoryStats?.top3BrandShare)}，Top3 卖家销量占比 ${formatPercent(categoryStats?.top3SellerShare)}。`,
+    },
+    {
+      title: 'Amazon 自营占比',
+      val1: left.detail.sellerSource || '未知',
+      val2: right.detail.sellerSource || '未知',
+      desc: `Amazon 自营销量占比 ${formatPercent(categoryStats?.amazonOwnedShare)}。如果自营占比高，普通卖家进入会更难。`,
     },
   ];
 }
@@ -678,12 +800,12 @@ function buildTrafficColumns(mode, left, right, keywordSets, sourcing) {
   return [
     {
       eyebrow: '泛词自然位',
-      title: genericTerms.length ? '谁更稳住免费流量' : '泛词样本不足',
+      title: genericTerms.length ? (mode === 'find' ? '为什么它值得盯' : '谁更稳住免费流量') : '泛词样本不足',
       points: genericTerms.length ? genericTerms : ['当前没有足够稳定的泛词样本。'],
     },
     {
       eyebrow: '场景词与转化意图',
-      title: scenarioTerms.length ? '谁更能吃到高意图词' : '场景词样本不足',
+      title: scenarioTerms.length ? (mode === 'find' ? '下一步该跟踪哪些词' : '谁更能吃到高意图词') : '场景词样本不足',
       accent: true,
       points: scenarioTerms.length ? scenarioTerms : ['当前没有足够稳定的场景词样本。'],
     },
@@ -761,6 +883,191 @@ function buildActionCards(mode, left, right, keywordSets, categoryStats, sourcin
   }
 
   return cards;
+}
+
+function buildReviewBlocks(left, right) {
+  const products = [
+    {
+      eyebrow: 'Seed ASIN',
+      detail: left.detail,
+      positives: summarizeReviewThemes(left.positiveReviews),
+      negatives: summarizeReviewThemes(left.negativeReviews),
+    },
+    {
+      eyebrow: 'Benchmark ASIN',
+      detail: right.detail,
+      positives: summarizeReviewThemes(right.positiveReviews),
+      negatives: summarizeReviewThemes(right.negativeReviews),
+    },
+  ];
+
+  return products.map((item) => {
+    const positiveLabels = item.positives.map((theme) => theme.label);
+    const negativeLabels = item.negatives.map((theme) => theme.label);
+    const topNegative = item.negatives[0];
+
+    return {
+      eyebrow: item.eyebrow,
+      title: item.detail.brand || item.detail.asin,
+      summary:
+        negativeLabels.length > 0
+          ? `${item.detail.brand || item.detail.asin} 当前最大的真实风险落在 ${negativeLabels.join('、')}，这会直接影响转化和复购。`
+          : `${item.detail.brand || item.detail.asin} 当前负评主题还不够集中，先继续观察评论结构。`,
+      positives: positiveLabels.length > 0 ? positiveLabels : ['当前没有形成稳定的正向主题样本。'],
+      negatives: negativeLabels.length > 0 ? negativeLabels : ['当前没有形成稳定的负向主题样本。'],
+      opportunities:
+        topNegative
+          ? [
+              `把 ${topNegative.label} 作为首要修正项，先解决真实体验问题。`,
+              `围绕 ${topNegative.label} 在主图、A+ 或 bullet 中补足证明，而不是只堆卖点。`,
+            ]
+          : ['继续积累评论样本，再决定产品、页面和投放动作。'],
+    };
+  });
+}
+
+function buildRoadmapSteps(mode, left, right, keywordSets, sourcing) {
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || '核心场景词';
+
+  if (mode === 'find') {
+    return [
+      {
+        phase: 'Week 1',
+        title: `锁定 ${right.detail.brand || right.detail.asin} 的监控面板`,
+        desc: '固定追踪价格、评论增速、核心词自然位和广告位，先确认它究竟是价格标杆还是关键词标杆。',
+      },
+      {
+        phase: 'Week 2',
+        title: `拆 ${scenarioKeyword} 对应的页面和投放结构`,
+        desc: '重点看标题前半句、主图承诺、附件组合和评论里被反复验证的卖点。',
+      },
+      {
+        phase: 'Week 3-4',
+        title: '扩成备选 watchlist',
+        desc: '不要只盯一支 ASIN，至少补 2 支同类目样本，判断你真正要跟的是哪种打法。',
+      },
+    ];
+  }
+
+  if (mode === 'source') {
+    return [
+      {
+        phase: 'Step 1',
+        title: '先筛 1688 样本，不要直接问价',
+        desc: '优先按相关性、外观结构、认证可能性和起订量做第一轮淘汰，避免被低价样本误导。',
+      },
+      {
+        phase: 'Step 2',
+        title: `用 ${scenarioKeyword} 对齐产品定义`,
+        desc: '供给样本要能支撑 Amazon 侧真实需求词和评论期待，否则再便宜也不值得做。',
+      },
+      {
+        phase: 'Step 3',
+        title: '进入打样与成本复核',
+        desc: sourcing?.items.length
+          ? `当前保留下来的 ${sourcing.items.length} 条样本只够做 shortlist，下一步必须补打样、质检和落地成本。`
+          : '当前供给样本还不够，先补足有效样本再进入打样。',
+      },
+    ];
+  }
+
+  return [
+    {
+      phase: 'Week 1',
+      title: '先修 P0 负评风险',
+      desc: '把最密集的真实差评主题拉平，否则后续流量放大只会把问题放大。',
+    },
+    {
+      phase: 'Week 2',
+      title: `围绕 ${scenarioKeyword} 重写转化结构`,
+      desc: '同步改标题前半句、主图和广告结构，让高意图词和页面承诺保持一致。',
+    },
+    {
+      phase: 'Week 3-4',
+      title: '复盘价格带与利润空间',
+      desc: '在价格、FBA、CPC 和评论门槛一起成立后，再决定是否放大预算或扩变体。',
+    },
+  ];
+}
+
+function buildModeFocus(mode, left, right, keywordSets, categoryReport, sourcing, competitorCandidates) {
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || '核心词';
+  const secondCandidate = competitorCandidates[1];
+
+  if (mode === 'find') {
+    return {
+      title: '锁定逻辑',
+      cards: [
+        {
+          label: 'Why This ASIN',
+          value: right.detail.brand || right.detail.asin,
+          desc: '系统优先锁定同类目、销量靠前且标题重合度更高的样本，而不是只看表面相似。',
+        },
+        {
+          label: 'Backup Watchlist',
+          value: secondCandidate?.brand || secondCandidate?.asin || '暂无第二候选',
+          desc: secondCandidate
+            ? `${secondCandidate.asin} 也是可跟踪样本，但当前优先级低于第一竞对。`
+            : '当前类目里没有找到足够强的第二候选。',
+        },
+        {
+          label: 'Track First',
+          value: scenarioKeyword,
+          desc: `先盯 ${scenarioKeyword}、价格动作和评论增速，再判断要抄的是词路还是产品路。`,
+        },
+      ],
+    };
+  }
+
+  if (mode === 'source') {
+    const prices = sourcing?.items
+      .map((item) => item.price)
+      .filter((value) => value !== null && value !== undefined) || [];
+
+    return {
+      title: '寻源判断',
+      cards: [
+        {
+          label: 'Amazon Benchmark',
+          value: right.detail.brand || right.detail.asin,
+          desc: '先用 Amazon 侧真实成交样本定义市场，不让 1688 低价反过来定义需求。',
+        },
+        {
+          label: 'Supply Range',
+          value: prices.length ? `¥${Math.min(...prices)} - ¥${Math.max(...prices)}` : '样本不足',
+          desc: sourcing?.searchName
+            ? `当前供给搜索词是 ${sourcing.searchName}，先看有没有稳定样本，再谈询盘。`
+            : '当前还没形成可读的供给价格带。',
+        },
+        {
+          label: 'Kill First',
+          value: '相关性筛选',
+          desc: '先淘汰低相关、低认证可能和结构不对的样本，避免把错误供给带进后续流程。',
+        },
+      ],
+    };
+  }
+
+  return {
+    title: '模式判断',
+    cards: [
+      {
+        label: 'Current Winner',
+        value: left.detail.monthlySales >= right.detail.monthlySales ? left.detail.brand || left.detail.asin : right.detail.brand || right.detail.asin,
+        desc: '当前先看谁更能把销量、评论和自然位连成闭环，而不是只看单一指标。',
+      },
+      {
+        label: 'Attack Window',
+        value: scenarioKeyword,
+        desc: `如果要切入，优先从 ${scenarioKeyword} 这种更高意图的词路切进去。`,
+      },
+      {
+        label: 'Entry Constraint',
+        value: categoryReport.stats?.medianPrice ? `中位价 ${formatCurrency(categoryReport.stats.medianPrice)}` : '评论门槛',
+        desc: '当前进入限制主要来自价格带、评论门槛和头部集中度的组合。',
+      },
+    ],
+  };
 }
 
 function chooseWinner(left, right) {
@@ -862,6 +1169,10 @@ function derive1688SearchName(detail, keywordSets) {
 }
 
 function pickBestCompetitor(seedDetail, categoryReport) {
+  return scoreCompetitors(seedDetail, categoryReport)[0];
+}
+
+function scoreCompetitors(seedDetail, categoryReport) {
   const seedTokens = new Set(tokenize(`${seedDetail.title || ''} ${seedDetail.category || ''}`));
   const seedBrand = normalizeKeyword(seedDetail.brand);
   const seedPrice = seedDetail.price || 0;
@@ -892,13 +1203,15 @@ function pickBestCompetitor(seedDetail, categoryReport) {
       }
 
       return (right.sales || 0) - (left.sales || 0);
-    })[0];
+    });
 }
 
-function buildReportPayload({ mode, session, left, right, categoryReport, keywordIntel, sourcing, extraNote }) {
+function buildReportPayload({ mode, session, left, right, categoryReport, keywordIntel, sourcing, extraNote, competitorCandidates = [] }) {
   const winnerState = chooseWinner(left, right);
   const keywordSets = chooseKeywordSets([left, right]);
   const genericKeywordPair = buildGenericKeywordPair(left, right, keywordSets);
+  const sectionCopy = buildSectionCopy(mode, left, right, categoryReport.stats, keywordSets, sourcing);
+  const modeFocus = buildModeFocus(mode, left, right, keywordSets, categoryReport, sourcing, competitorCandidates);
 
   return {
     session,
@@ -911,16 +1224,27 @@ function buildReportPayload({ mode, session, left, right, categoryReport, keywor
       },
       title: buildTitle(mode, winnerState.winner, winnerState.other, keywordSets),
       summary: buildSummary(mode, left, right, categoryReport.stats, extraNote),
+      labels: {
+        left: left.detail.brand || left.detail.asin,
+        right: right.detail.brand || right.detail.asin,
+      },
+      sectionCopy,
       heroCards: buildHeroCards(mode, winnerState.winner, winnerState.other, categoryReport.stats, keywordSets, sourcing, extraNote),
-      navItems: NAV_ITEMS,
+      navItems: buildNavItems(mode),
+      modeFocusTitle: modeFocus.title,
+      modeFocusCards: modeFocus.cards,
       products: [
         buildProductCard(left.detail, summarizeReviewThemes(left.positiveReviews)),
         buildProductCard(right.detail, summarizeReviewThemes(right.positiveReviews)),
       ],
       comparisonRows: buildComparisonRows(left, right, genericKeywordPair),
+      categoryCards: buildCategoryCards(categoryReport.stats, left, right),
+      categoryRows: buildCategoryRows(left, right, categoryReport.stats),
       trafficColumns: buildTrafficColumns(mode, left, right, keywordSets, sourcing),
       trafficInsight: buildTrafficInsight(mode, categoryReport.stats, keywordIntel, sourcing),
+      reviewBlocks: buildReviewBlocks(left, right),
       actionCards: buildActionCards(mode, left, right, keywordSets, categoryReport.stats, sourcing),
+      roadmapSteps: buildRoadmapSteps(mode, left, right, keywordSets, sourcing),
     },
   };
 }
@@ -963,7 +1287,8 @@ export async function buildLiveReport(sessionInput) {
     ? await callSorftimeTool('category_report', { nodeId: seed.detail.nodeId, amzSite: site })
     : null;
   const categoryReport = categoryReportText ? parseCategoryReport(categoryReportText.text) : { topProducts: [], stats: {} };
-  const competitor = pickBestCompetitor(seed.detail, categoryReport);
+  const competitorCandidates = scoreCompetitors(seed.detail, categoryReport);
+  const competitor = competitorCandidates[0];
 
   if (!competitor?.asin) {
     throw new Error('没有从当前类目里找到足够可信的竞对样本，请更换 ASIN 再试。');
@@ -982,6 +1307,7 @@ export async function buildLiveReport(sessionInput) {
       categoryReport,
       keywordIntel,
       extraNote: `本次自动锁定的第一竞对是 ${competitor.asin}，因为它和种子 ASIN 同类目、销量靠前且标题相似度更高。`,
+      competitorCandidates,
     });
   }
 
@@ -1005,5 +1331,6 @@ export async function buildLiveReport(sessionInput) {
     keywordIntel,
     sourcing,
     extraNote: `Amazon 侧先拿 ${competitor.asin} 做对照，1688 侧再用 “${searchName}” 拉相似供给作为落地锚点。`,
+    competitorCandidates,
   });
 }
