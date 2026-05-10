@@ -1149,6 +1149,189 @@ function buildHeroCards(mode, winner, other, categoryStats, keywordSets, sourcin
   return [firstCard, secondCard, thirdCard];
 }
 
+function trimText(value, max = 88) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return '未知';
+  }
+
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function buildCompareModeFocus(left, right, categoryStats, keywordSets) {
+  const winner = chooseWinner(left, right).winner;
+  const other = chooseWinner(left, right).other;
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || '核心场景词';
+
+  return {
+    title: '模式判断',
+    cards: [
+      {
+        label: 'Current Winner',
+        value: winner.detail.brand || winner.detail.asin,
+        desc: `当前以销量、评论护城河和自然位综合看，${winner.detail.brand || winner.detail.asin} 更像市场基准盘。`,
+      },
+      {
+        label: 'Challenger Signal',
+        value: other.detail.brand || other.detail.asin,
+        desc: `${other.detail.brand || other.detail.asin} 不是简单陪跑，它在 ${scenarioKeyword} 这类词路上仍然有值得细拆的打法。`,
+      },
+      {
+        label: 'Entry Constraint',
+        value: categoryStats?.medianPrice ? `中位价 ${formatCurrency(categoryStats.medianPrice)}` : '评论门槛',
+        desc: '当前进入限制主要来自价格带、评论门槛、头部集中度和高意图词竞争强度。',
+      },
+    ],
+  };
+}
+
+function buildCompareComparisonRows(left, right, genericKeywordPair) {
+  const baseRows = buildComparisonRows(left, right, genericKeywordPair);
+
+  return [
+    {
+      title: '标题与定位',
+      val1: trimText(left.detail.title),
+      val2: trimText(right.detail.title),
+      desc: '先看标题前半句到底在抢泛词、场景词还是人群词，这决定点击质量和转化预期。',
+    },
+    ...baseRows,
+    {
+      title: '变体策略',
+      val1: formatNumber(left.detail.variations),
+      val2: formatNumber(right.detail.variations),
+      desc: '变体多不一定赢，但更多子体通常意味着更强的颜色、附件或人群覆盖。',
+      highlight: compareByBetter(left, right, (dataset) => dataset.detail.variations),
+    },
+    {
+      title: '卖家来源 / 上架时间',
+      val1: `${left.detail.sellerSource || '未知'} / ${left.detail.listedAt || '未知'}`,
+      val2: `${right.detail.sellerSource || '未知'} / ${right.detail.listedAt || '未知'}`,
+      desc: '卖家来源看供给属性，上架时间看积累周期。年轻 listing 但能打进头部通常更值得重视。',
+    },
+    {
+      title: '包装 / 重量',
+      val1: `${left.detail.packageSizeCm || '未知'} / ${left.detail.weightG ? `${left.detail.weightG}g` : '未知'}`,
+      val2: `${right.detail.packageSizeCm || '未知'} / ${right.detail.weightG ? `${right.detail.weightG}g` : '未知'}`,
+      desc: '包装尺寸和重量会直接影响 FBA、运输和利润空间，不能只看售价判断商业性。',
+    },
+  ];
+}
+
+function buildCompareTrafficColumns(left, right, keywordSets, keywordIntel) {
+  const genericTerms = keywordSets.generic.slice(0, 3).map((item) => {
+    const leftTerm = findKeywordForDataset(left, item.keyword);
+    const rightTerm = findKeywordForDataset(right, item.keyword);
+    return `${item.keyword}: ${left.detail.brand} [${leftTerm?.position || leftTerm?.organicPosition || '未进样本'}], ${right.detail.brand} [${rightTerm?.position || rightTerm?.organicPosition || '未进样本'}]`;
+  });
+
+  const scenarioTerms = keywordSets.scenario.slice(0, 3).map((item) => {
+    const leftTerm = findKeywordForDataset(left, item.keyword);
+    const rightTerm = findKeywordForDataset(right, item.keyword);
+    return `${item.keyword}: ${left.detail.brand} [${leftTerm?.organicPosition || leftTerm?.position || leftTerm?.adPosition || '未进样本'}], ${right.detail.brand} [${rightTerm?.organicPosition || rightTerm?.position || rightTerm?.adPosition || '未进样本'}]`;
+  });
+
+  const detailPoints = keywordIntel.slice(0, 3).map((item) => {
+    const detail = item.detail;
+    return `${detail.keyword || item.keyword}: 月搜 ${formatNumber(detail.monthlyVolume)} / CPC ${formatCurrency(detail.cpc)} / 旺季 ${detail.peakMonth || '未知'}`;
+  });
+
+  return [
+    {
+      eyebrow: '核心防守词',
+      title: genericTerms.length ? '谁在守住泛词免费流量' : '泛词样本不足',
+      points: genericTerms.length ? genericTerms : ['当前没有足够稳定的泛词样本。'],
+    },
+    {
+      eyebrow: '场景攻击词',
+      title: scenarioTerms.length ? '谁更能吃到高意图转化' : '场景词样本不足',
+      accent: true,
+      points: scenarioTerms.length ? scenarioTerms : ['当前没有足够稳定的场景词样本。'],
+    },
+    {
+      eyebrow: 'CPC 与季节性',
+      title: detailPoints.length ? '哪些词值得进广告结构' : '关键词细节样本不足',
+      points: detailPoints.length ? detailPoints : ['当前还没有足够稳定的关键词细节样本。'],
+    },
+  ];
+}
+
+function buildCompareReviewBlocks(left, right) {
+  return buildReviewBlocks(left, right).map((block) => ({
+    ...block,
+    opportunities: block.negatives[0] && block.positives[0]
+      ? [
+          `先修 ${block.negatives[0]}，否则放量只会放大差评。`,
+          `把 ${block.positives[0]} 变成主图或副图里可被验证的承诺。`,
+          ...block.opportunities,
+        ].slice(0, 3)
+      : block.opportunities,
+  }));
+}
+
+function buildCompareActionCards(left, right, keywordSets, categoryStats) {
+  const topRisk = [...summarizeReviewThemes(left.negativeReviews), ...summarizeReviewThemes(right.negativeReviews)]
+    .sort((a, b) => b.count - a.count)[0];
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || '核心场景词';
+  const medianPrice = categoryStats?.medianPrice;
+
+  return [
+    {
+      priority: 'P0',
+      title: topRisk ? `先处理 ${topRisk.label}` : '先处理高频负评点',
+      desc: topRisk
+        ? `当前最伤转化的是 ${topRisk.label}。这类问题不解决，标题、广告和低价都只是暂时掩盖。`
+        : '先把重复出现的真实负评点拉平，再谈流量扩量。',
+      accentClass: 'border-t-red-500',
+    },
+    {
+      priority: 'P1',
+      title: `围绕 ${scenarioKeyword} 重写标题与主图`,
+      desc: `把 ${scenarioKeyword} 放进标题前半句、主图卖点和副图证明，确保搜索词和页面承诺对齐。`,
+      accentClass: 'border-t-orange-400',
+    },
+    {
+      priority: 'P1',
+      title: '拆成泛词防守 + 场景词进攻两套广告结构',
+      desc: '泛词只守排名和控量，场景词才是更容易拿到高质量转化的增长抓手。',
+      accentClass: 'border-t-blue-500',
+    },
+    {
+      priority: 'P2',
+      title: medianPrice ? `围绕中位价 ${formatCurrency(medianPrice)} 校正客单` : '复盘价格带与利润空间',
+      desc: '不要只盯最低价。价格、FBA、CPC 和评论门槛要一起看，才能判断这条路有没有利润。',
+      accentClass: 'border-t-emerald-500',
+    },
+  ];
+}
+
+function buildCompareRoadmapSteps(left, right, keywordSets) {
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || '核心场景词';
+
+  return [
+    {
+      phase: 'Week 1',
+      title: `拆 ${left.detail.brand || left.detail.asin} 和 ${right.detail.brand || right.detail.asin} 的转化差`,
+      desc: '先对齐价格、评论护城河、标题定位和主图承诺，确定谁赢在产品、谁赢在流量。',
+    },
+    {
+      phase: 'Week 2',
+      title: `围绕 ${scenarioKeyword} 改标题、主图和 bullet`,
+      desc: '让高意图词和页面承诺一致，避免广告进来的流量在详情页丢失。',
+    },
+    {
+      phase: 'Week 3',
+      title: '重建广告分组',
+      desc: '泛词单独防守，场景词单独进攻，产品词和竞品词分开管理，不混投。',
+    },
+    {
+      phase: 'Week 4',
+      title: '按评论反馈决定是否做变体或产品修正',
+      desc: '先验证产品风险是否收敛，再决定要不要扩附件、颜色或场景版本。',
+    },
+  ];
+}
+
 function derive1688SearchName(detail, keywordSets) {
   const scenarioKeyword = keywordSets.scenario[0]?.keyword;
   const categorySeed = normalizeKeyword(detail.category || detail.subCategoryName || 'hair dryer');
@@ -1206,31 +1389,71 @@ function scoreCompetitors(seedDetail, categoryReport) {
     });
 }
 
-function buildReportPayload({ mode, session, left, right, categoryReport, keywordIntel, sourcing, extraNote, competitorCandidates = [] }) {
+function buildBaseReportMeta(mode) {
+  return {
+    date: new Date().toISOString().slice(0, 10),
+    marketplace: 'Amazon US',
+    source: 'Sorftime MCP',
+    mode,
+  };
+}
+
+function buildCompareModeReport({ session, left, right, categoryReport, keywordIntel, extraNote }) {
   const winnerState = chooseWinner(left, right);
   const keywordSets = chooseKeywordSets([left, right]);
   const genericKeywordPair = buildGenericKeywordPair(left, right, keywordSets);
-  const sectionCopy = buildSectionCopy(mode, left, right, categoryReport.stats, keywordSets, sourcing);
-  const modeFocus = buildModeFocus(mode, left, right, keywordSets, categoryReport, sourcing, competitorCandidates);
+  const modeFocus = buildCompareModeFocus(left, right, categoryReport.stats, keywordSets);
 
   return {
     session,
     report: {
-      meta: {
-        date: new Date().toISOString().slice(0, 10),
-        marketplace: 'Amazon US',
-        source: 'Sorftime MCP',
-        mode,
-      },
-      title: buildTitle(mode, winnerState.winner, winnerState.other, keywordSets),
-      summary: buildSummary(mode, left, right, categoryReport.stats, extraNote),
+      meta: buildBaseReportMeta('compare'),
+      title: buildTitle('compare', winnerState.winner, winnerState.other, keywordSets),
+      summary: buildSummary('compare', left, right, categoryReport.stats, extraNote),
       labels: {
         left: left.detail.brand || left.detail.asin,
         right: right.detail.brand || right.detail.asin,
       },
-      sectionCopy,
-      heroCards: buildHeroCards(mode, winnerState.winner, winnerState.other, categoryReport.stats, keywordSets, sourcing, extraNote),
-      navItems: buildNavItems(mode),
+      sectionCopy: buildSectionCopy('compare', left, right, categoryReport.stats, keywordSets),
+      heroCards: buildHeroCards('compare', winnerState.winner, winnerState.other, categoryReport.stats, keywordSets),
+      navItems: buildNavItems('compare'),
+      modeFocusTitle: modeFocus.title,
+      modeFocusCards: modeFocus.cards,
+      products: [
+        buildProductCard(left.detail, summarizeReviewThemes(left.positiveReviews)),
+        buildProductCard(right.detail, summarizeReviewThemes(right.positiveReviews)),
+      ],
+      comparisonRows: buildCompareComparisonRows(left, right, genericKeywordPair),
+      categoryCards: buildCategoryCards(categoryReport.stats, left, right),
+      categoryRows: buildCategoryRows(left, right, categoryReport.stats),
+      trafficColumns: buildCompareTrafficColumns(left, right, keywordSets, keywordIntel),
+      trafficInsight: buildTrafficInsight('compare', categoryReport.stats, keywordIntel),
+      reviewBlocks: buildCompareReviewBlocks(left, right),
+      actionCards: buildCompareActionCards(left, right, keywordSets, categoryReport.stats),
+      roadmapSteps: buildCompareRoadmapSteps(left, right, keywordSets),
+    },
+  };
+}
+
+function buildFindModeReport({ session, left, right, categoryReport, keywordIntel, extraNote, competitorCandidates }) {
+  const winnerState = chooseWinner(left, right);
+  const keywordSets = chooseKeywordSets([left, right]);
+  const genericKeywordPair = buildGenericKeywordPair(left, right, keywordSets);
+  const modeFocus = buildModeFocus('find', left, right, keywordSets, categoryReport, null, competitorCandidates);
+
+  return {
+    session,
+    report: {
+      meta: buildBaseReportMeta('find'),
+      title: buildTitle('find', winnerState.winner, winnerState.other, keywordSets),
+      summary: buildSummary('find', left, right, categoryReport.stats, extraNote),
+      labels: {
+        left: left.detail.brand || left.detail.asin,
+        right: right.detail.brand || right.detail.asin,
+      },
+      sectionCopy: buildSectionCopy('find', left, right, categoryReport.stats, keywordSets),
+      heroCards: buildHeroCards('find', winnerState.winner, winnerState.other, categoryReport.stats, keywordSets, null, extraNote),
+      navItems: buildNavItems('find'),
       modeFocusTitle: modeFocus.title,
       modeFocusCards: modeFocus.cards,
       products: [
@@ -1240,11 +1463,48 @@ function buildReportPayload({ mode, session, left, right, categoryReport, keywor
       comparisonRows: buildComparisonRows(left, right, genericKeywordPair),
       categoryCards: buildCategoryCards(categoryReport.stats, left, right),
       categoryRows: buildCategoryRows(left, right, categoryReport.stats),
-      trafficColumns: buildTrafficColumns(mode, left, right, keywordSets, sourcing),
-      trafficInsight: buildTrafficInsight(mode, categoryReport.stats, keywordIntel, sourcing),
+      trafficColumns: buildTrafficColumns('find', left, right, keywordSets),
+      trafficInsight: buildTrafficInsight('find', categoryReport.stats, keywordIntel),
       reviewBlocks: buildReviewBlocks(left, right),
-      actionCards: buildActionCards(mode, left, right, keywordSets, categoryReport.stats, sourcing),
-      roadmapSteps: buildRoadmapSteps(mode, left, right, keywordSets, sourcing),
+      actionCards: buildActionCards('find', left, right, keywordSets, categoryReport.stats),
+      roadmapSteps: buildRoadmapSteps('find', left, right, keywordSets),
+    },
+  };
+}
+
+function buildSourceModeReport({ session, left, right, categoryReport, keywordIntel, sourcing, extraNote, competitorCandidates }) {
+  const winnerState = chooseWinner(left, right);
+  const keywordSets = chooseKeywordSets([left, right]);
+  const genericKeywordPair = buildGenericKeywordPair(left, right, keywordSets);
+  const modeFocus = buildModeFocus('source', left, right, keywordSets, categoryReport, sourcing, competitorCandidates);
+
+  return {
+    session,
+    report: {
+      meta: buildBaseReportMeta('source'),
+      title: buildTitle('source', winnerState.winner, winnerState.other, keywordSets),
+      summary: buildSummary('source', left, right, categoryReport.stats, extraNote),
+      labels: {
+        left: left.detail.brand || left.detail.asin,
+        right: right.detail.brand || right.detail.asin,
+      },
+      sectionCopy: buildSectionCopy('source', left, right, categoryReport.stats, keywordSets, sourcing),
+      heroCards: buildHeroCards('source', winnerState.winner, winnerState.other, categoryReport.stats, keywordSets, sourcing, extraNote),
+      navItems: buildNavItems('source'),
+      modeFocusTitle: modeFocus.title,
+      modeFocusCards: modeFocus.cards,
+      products: [
+        buildProductCard(left.detail, summarizeReviewThemes(left.positiveReviews)),
+        buildProductCard(right.detail, summarizeReviewThemes(right.positiveReviews)),
+      ],
+      comparisonRows: buildComparisonRows(left, right, genericKeywordPair),
+      categoryCards: buildCategoryCards(categoryReport.stats, left, right),
+      categoryRows: buildCategoryRows(left, right, categoryReport.stats),
+      trafficColumns: buildTrafficColumns('source', left, right, keywordSets, sourcing),
+      trafficInsight: buildTrafficInsight('source', categoryReport.stats, keywordIntel, sourcing),
+      reviewBlocks: buildReviewBlocks(left, right),
+      actionCards: buildActionCards('source', left, right, keywordSets, categoryReport.stats, sourcing),
+      roadmapSteps: buildRoadmapSteps('source', left, right, keywordSets, sourcing),
     },
   };
 }
@@ -1270,8 +1530,7 @@ export async function buildLiveReport(sessionInput) {
         ? `当前详细报告只对前两个 ASIN ${usedAsins.join(' / ')} 做深度比对，其余输入建议下一轮单独展开。`
         : '';
 
-    return buildReportPayload({
-      mode: 'compare',
+    return buildCompareModeReport({
       session: { ...sessionInput, asins: usedAsins, query: usedAsins.join(', ') },
       left,
       right,
@@ -1299,8 +1558,7 @@ export async function buildLiveReport(sessionInput) {
   const keywordIntel = await fetchKeywordIntel(site, collectKeywordSeeds(keywordSets));
 
   if (sessionInput.mode === 'find') {
-    return buildReportPayload({
-      mode: 'find',
+    return buildFindModeReport({
       session: { ...sessionInput, asins: [seedAsin, competitor.asin], query: `${seedAsin}, ${competitor.asin}` },
       left: seed,
       right: benchmark,
@@ -1322,8 +1580,7 @@ export async function buildLiveReport(sessionInput) {
     items: sanitizeSourcingItems(rawSourcingItems, searchName),
   };
 
-  return buildReportPayload({
-    mode: 'source',
+  return buildSourceModeReport({
     session: { ...sessionInput, asins: [seedAsin, competitor.asin], query: `${seedAsin}, ${competitor.asin}` },
     left: seed,
     right: benchmark,
