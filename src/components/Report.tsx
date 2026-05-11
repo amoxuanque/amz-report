@@ -240,6 +240,21 @@ function CandidatePoolGrid({ cards }: { cards: ReportCandidateCard[] }) {
               <li key={point}>{point}</li>
             ))}
           </ul>
+          {card.links && card.links.length > 0 && (
+            <div className="mb-4 flex flex-wrap gap-2">
+              {card.links.map((link) => (
+                <a
+                  key={`${card.title}-${link.label}`}
+                  href={link.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center px-3 py-1.5 rounded border border-slate-200 bg-slate-50 text-xs font-medium text-slate-700 hover:bg-slate-100 transition-colors"
+                >
+                  {link.label}
+                </a>
+              ))}
+            </div>
+          )}
           {card.caution && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
               <strong className="text-amber-700">注意：</strong> {card.caution}

@@ -42,7 +42,7 @@ function buildNavItems(mode) {
   }
 
   if (mode === 'source') {
-    items.splice(2, 0, { id: '供给样本', label: '供给样本' });
+    items.splice(2, 0, { id: '推荐厂家', label: '推荐厂家' });
   }
 
   return items;
@@ -393,6 +393,7 @@ function parseSourcingItems(text) {
 
 function sanitizeSourcingItems(items, searchName) {
   const preferredTokens = tokenize(searchName);
+  const normalizedSearchName = normalizeKeyword(searchName);
   const hardNoisePatterns = [
     /定子|转子|铁芯|配件|电机|风罩|烘罩|卷发罩|扩散罩/i,
     /香薰|精油|熏香|扩香|扩香机|香氛|喷香|diffuser香/i,
@@ -404,6 +405,8 @@ function sanitizeSourcingItems(items, searchName) {
     .map((item) => {
       const title = item.title || '';
       const overlap = tokenize(title).filter((token) => preferredTokens.includes(token)).length;
+      const searchPhraseHit =
+        normalizedSearchName && normalizedSearchName.length > 1 && normalizeKeyword(title).includes(normalizedSearchName) ? 1 : 0;
       const isNoise = hardNoisePatterns.some((pattern) => pattern.test(title));
       const hasCoreProduct = coreProductPattern.test(title);
       const hasRelevantFeature = /负离子|高速|护发|静音|大功率|速干/i.test(title);
@@ -412,6 +415,7 @@ function sanitizeSourcingItems(items, searchName) {
         ...item,
         relevanceScore:
           overlap +
+          searchPhraseHit +
           (hasCoreProduct ? 2 : 0) +
           (hasRelevantFeature ? 1 : 0) +
           ((item.price || 0) >= 5 ? 0 : -2) -
@@ -488,7 +492,182 @@ function buildPriceBand(items) {
   };
 }
 
-function analyzeSourcing(searchNames, items) {
+function buildSellerLookupUrl(seller) {
+  const value = String(seller || '').trim();
+  if (!value) {
+    return null;
+  }
+
+  return `https://s.1688.com/company/company_search.htm?keywords=${encodeURIComponent(value)}`;
+}
+
+function buildSourceTargets(seedDetail, benchmarkDetail, keywordSets) {
+  const titleBlob = `${seedDetail?.title || ''} ${benchmarkDetail?.title || ''}`;
+  const scenarioKeyword = keywordSets?.scenario?.[0]?.keyword || keywordSets?.generic?.[0]?.keyword || null;
+  const targets = [];
+
+  if (/diffuser/i.test(titleBlob)) {
+    targets.push({
+      label: '扩散罩/卷发场景',
+      patterns: [/diffuser/i, /扩散罩|卷发|风罩/i],
+    });
+  }
+
+  if (/ionic|negative ion/i.test(titleBlob)) {
+    targets.push({
+      label: '负离子护发',
+      patterns: [/ionic/i, /负离子|水离子/i],
+    });
+  }
+
+  if (/ceramic|tourmaline/i.test(titleBlob)) {
+    targets.push({
+      label: '陶瓷/顺滑路线',
+      patterns: [/ceramic/i, /tourmaline/i, /陶瓷|顺滑/i],
+    });
+  }
+
+  if (/quiet|noise/i.test(titleBlob)) {
+    targets.push({
+      label: '静音体验',
+      patterns: [/quiet/i, /noise/i, /静音/i],
+    });
+  }
+
+  if (/fast drying|high speed|1875w|watt/i.test(titleBlob)) {
+    targets.push({
+      label: '高速速干',
+      patterns: [/fast dry/i, /high speed/i, /高速|速干|大功率/i],
+    });
+  }
+
+  return {
+    scenarioKeyword,
+    labels: targets.map((item) => item.label),
+    featureChecks: targets,
+  };
+}
+
+function extractSourceFeatureHits(title, sourceTargets) {
+  return sourceTargets.featureChecks
+    .filter((check) => check.patterns.some((pattern) => pattern.test(title)))
+    .map((check) => check.label);
+}
+
+function scoreSourcePriceFit(price, priceBand) {
+  if (!priceBand || !price) {
+    return 0;
+  }
+
+  const diffRatio = Math.abs(price - priceBand.median) / Math.max(priceBand.median, 1);
+  if (diffRatio <= 0.2) {
+    return 2;
+  }
+  if (diffRatio <= 0.45) {
+    return 1;
+  }
+  if (diffRatio >= 0.8) {
+    return -2;
+  }
+  if (diffRatio >= 0.9) {
+    return -1;
+  }
+
+  return 0;
+}
+
+function buildSupplierRecommendations(items, sourceTargets, directPriceBand) {
+  const sellerMap = new Map();
+
+  items.forEach((item) => {
+    const sellerKey = String(item.seller || item.url || item.title).trim();
+    if (!sellerKey) {
+      return;
+    }
+
+    const current = sellerMap.get(sellerKey) || {
+      seller: item.seller || '未知供应商',
+      items: [],
+      searchNames: new Set(),
+    };
+    current.items.push(item);
+    if (item.matchedSearchName) {
+      current.searchNames.add(item.matchedSearchName);
+    }
+    sellerMap.set(sellerKey, current);
+  });
+
+  return [...sellerMap.values()]
+    .map((supplier) => {
+      const rankedItems = supplier.items
+        .map((item) => {
+          const featureHits = extractSourceFeatureHits(item.title || '', sourceTargets);
+          const manufacturerCue = /厂家|工厂|源头|跨境|批发/i.test(item.title || '');
+          const ipRisk = /某森|dyson|徕芬|airwrap/i.test(item.title || '');
+          const suspiciousLowPrice =
+            item.price ? item.price < 20 : false;
+          const score =
+            6 +
+            featureHits.length * 2 +
+            supplier.searchNames.size * 1.5 +
+            scoreSourcePriceFit(item.price, directPriceBand) +
+            (manufacturerCue ? 1 : 0) -
+            (ipRisk ? 4 : 0) -
+            (suspiciousLowPrice ? 3 : 0);
+
+          return {
+            ...item,
+            featureHits,
+            manufacturerCue,
+            ipRisk,
+            suspiciousLowPrice,
+            supplierScore: Number(score.toFixed(2)),
+          };
+        })
+        .sort((left, right) => right.supplierScore - left.supplierScore);
+      const reviewedItems = rankedItems.filter((item) => !item.ipRisk && !item.suspiciousLowPrice);
+      const bestItem = reviewedItems[0];
+      const supplierPriceBand = buildPriceBand(reviewedItems);
+      const featureHits = [...new Set(reviewedItems.flatMap((item) => item.featureHits))];
+      const reasonLines = [];
+
+      if (featureHits.length > 0) {
+        reasonLines.push(`产品路线更接近当前需求：${featureHits.slice(0, 3).join(' / ')}`);
+      }
+
+      if (supplier.searchNames.size > 0) {
+        reasonLines.push(`至少命中 ${supplier.searchNames.size} 个供给搜索词：${[...supplier.searchNames].slice(0, 3).join(' / ')}`);
+      }
+
+      if (reviewedItems.some((item) => item.manufacturerCue)) {
+        reasonLines.push('标题里有厂家/跨境/批发信号，适合作为第一轮问样对象。');
+      }
+
+      return {
+        seller: supplier.seller,
+        score: Number((bestItem?.supplierScore || 0).toFixed(2)),
+        offerCount: reviewedItems.length,
+        searchNames: [...supplier.searchNames],
+        bestItem,
+        supplierPriceBand,
+        featureHits,
+        reasonLines: reasonLines.slice(0, 4),
+        offerUrl: bestItem?.url || null,
+        storeUrl: buildSellerLookupUrl(supplier.seller),
+      };
+    })
+    .filter((supplier) => supplier.bestItem)
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+
+      return (right.offerCount || 0) - (left.offerCount || 0);
+    })
+    .slice(0, 4);
+}
+
+function analyzeSourcing(searchNames, items, seedDetail, benchmarkDetail, keywordSets) {
   const normalizedItems = dedupeSourcingItems(items).map((item) => {
     const classification = classifySourcingItem(item.title);
     return {
@@ -505,6 +684,8 @@ function analyzeSourcing(searchNames, items) {
   const compactItems = normalizedItems.filter((item) => item.supplyType === 'compact');
   const priceBand = buildPriceBand(directItems.length ? directItems : normalizedItems);
   const uniqueSellers = new Set(normalizedItems.map((item) => item.seller).filter(Boolean));
+  const sourceTargets = buildSourceTargets(seedDetail, benchmarkDetail, keywordSets);
+  const recommendedSuppliers = buildSupplierRecommendations(directItems, sourceTargets, buildPriceBand(directItems));
 
   return {
     searchNames,
@@ -520,6 +701,8 @@ function analyzeSourcing(searchNames, items) {
     petCount: petItems.length,
     compactCount: compactItems.length,
     uniqueSellerCount: uniqueSellers.size,
+    sourceTargets,
+    recommendedSuppliers,
   };
 }
 
@@ -2333,158 +2516,154 @@ function buildFindRoadmapSteps(seed, primary, candidates, keywordSets) {
   ];
 }
 
-function buildSourceTitle(seed, benchmark, sourcing) {
-  if (sourcing.directCount >= 3) {
-    return `${seed.detail.brand || seed.detail.asin} 的需求盘成立，1688 侧也有直机样本，但要先筛干净再打样。`;
+function evaluateSourceVerdict(categoryStats, sourcing) {
+  const competitionHigh = (categoryStats?.highReviewsShare || 0) >= 75 || (categoryStats?.top3ProductShare || 0) >= 25;
+  const roomExists = (categoryStats?.top100Sales || 0) >= 150000 && (categoryStats?.medianPrice || 0) >= 20;
+  const supplyReady = sourcing.recommendedSuppliers.length >= 2;
+
+  if (roomExists && supplyReady && !competitionHigh) {
+    return {
+      label: '可以进入第一轮寻源',
+      desc: '类目空间成立，1688 侧也已经有可联系的供应商，可以先打样，不用继续空转。',
+    };
   }
 
-  return `${seed.detail.brand || seed.detail.asin} 的需求盘成立，但 1688 侧样本偏杂，先别急着问价。`;
+  if (roomExists && supplyReady) {
+    return {
+      label: '可以找厂，但别走低价货盘',
+      desc: '类目需求成立，但评论门槛和头部竞争不低，后面必须按目标款找厂，不适合拿便宜货硬上。',
+    };
+  }
+
+  return {
+    label: '先缩小机会，再继续找厂',
+    desc: '现在不是没有货，而是还没有足够可信的 shortlist，应该先把产品定义和筛厂口径再收紧。',
+  };
+}
+
+function buildSourceTitle(seed, benchmark, categoryStats, sourcing) {
+  const verdict = evaluateSourceVerdict(categoryStats, sourcing);
+  const brand = seed.detail.brand || seed.detail.asin;
+
+  if (sourcing.recommendedSuppliers.length >= 2) {
+    return `${brand} 这条路${verdict.label}，先联系 ${sourcing.recommendedSuppliers.slice(0, 2).map((item) => item.seller).join('、')}。`;
+  }
+
+  return `${brand} 这条路需求成立，但推荐厂家还不够，先别急着批量问价。`;
 }
 
 function buildSourceSummary(seed, benchmark, categoryStats, keywordIntel, sourcing, extraNote) {
   const topKeyword = keywordIntel[0]?.detail;
   const priceBand = sourcing.priceBand;
+  const verdict = evaluateSourceVerdict(categoryStats, sourcing);
+  const supplierLine = sourcing.recommendedSuppliers.length
+    ? `当前第一轮推荐先联系 ${sourcing.recommendedSuppliers.slice(0, 3).map((item) => item.seller).join('、')}。`
+    : '当前还没有拉出足够可信的厂家 shortlist。';
 
   return [
-    `这次不是先比谁卖得更好，而是先回答：${seed.detail.brand || seed.detail.asin} 这条路在 1688 侧到底有没有可落地的供给。`,
+    `这次去寻源先回答三件事：这个 Amazon 机会值不值得做、竞争门槛高不高、1688 有没有值得先聊的厂。`,
     `Amazon 侧先拿 ${benchmark.detail.brand || benchmark.detail.asin} 做基准。${seed.detail.brand || seed.detail.asin} 当前月销约 ${formatNumber(seed.detail.monthlySales)}，${benchmark.detail.brand || benchmark.detail.asin} 当前月销约 ${formatNumber(benchmark.detail.monthlySales)}。`,
     categoryStats?.name
-      ? `两者都在 ${categoryStats.name}，类目中位价约 ${formatCurrency(categoryStats.medianPrice)}，高评论产品拿走了 ${formatPercent(categoryStats.highReviewsShare)} 的销量。`
+      ? `${categoryStats.name} 当前 Top100 月销量约 ${formatNumber(categoryStats.top100Sales)}，中位价约 ${formatCurrency(categoryStats.medianPrice)}，高评论产品拿走了 ${formatPercent(categoryStats.highReviewsShare)} 的销量。`
       : '当前类目样本还不够完整。',
     topKeyword
-      ? `需求词里，${topKeyword.keyword} 月搜索量约 ${formatNumber(topKeyword.monthlyVolume)}，说明需求盘是成立的。`
+      ? `需求词里，${topKeyword.keyword} 月搜索量约 ${formatNumber(topKeyword.monthlyVolume)}，说明这不是没需求的路子。`
       : '关键词需求样本还不够完整。',
     priceBand
-      ? `1688 侧这次一共拉到 ${formatNumber(sourcing.totalCount)} 条样本，直机样本约 ${formatNumber(sourcing.directCount)} 条，价格主要落在 ¥${priceBand.min} - ¥${priceBand.max}。`
+      ? `1688 侧这次一共拉到 ${formatNumber(sourcing.totalCount)} 条样本，其中直机样本约 ${formatNumber(sourcing.directCount)} 条，供给参考带主要落在 ¥${priceBand.min} - ¥${priceBand.max}。`
       : `1688 侧这次一共拉到 ${formatNumber(sourcing.totalCount)} 条样本，但还没有形成稳定价格带。`,
-    sourcing.brushCount || sourcing.petCount || sourcing.compactCount
-      ? `供给盘并不干净，其中吹风梳/造型器约 ${formatNumber(sourcing.brushCount)} 条，宠物吹水机约 ${formatNumber(sourcing.petCount)} 条，便携折叠约 ${formatNumber(sourcing.compactCount)} 条，必须先排除错样本。`
-      : '供给盘相对集中，错误样本不算多。',
+    `${verdict.label}。${verdict.desc}`,
+    supplierLine,
     extraNote,
   ].filter(Boolean).join(' ');
 }
 
-function buildSourceHeroCards(seed, benchmark, sourcing) {
-  const priceBand = sourcing.priceBand;
+function buildSourceHeroCards(seed, benchmark, categoryStats, sourcing) {
+  const verdict = evaluateSourceVerdict(categoryStats, sourcing);
 
   return [
     {
-      label: 'Amazon 基准盘',
-      value: benchmark.detail.brand || benchmark.detail.asin,
-      desc: `先拿它定义目标价格带、评论门槛和主流卖点，不让 1688 低价反过来带偏需求判断。`,
+      label: '机会判断',
+      value: verdict.label,
+      desc: verdict.desc,
     },
     {
-      label: '可打样样本',
-      value: sourcing.directCount ? `${formatNumber(sourcing.directCount)} 条直机样本` : '暂无干净样本',
-      desc: priceBand
-        ? `当前直机样本价格主要落在 ¥${priceBand.min} - ¥${priceBand.max}，可以先做第一轮 shortlist。`
-        : '当前还没形成稳定的直机样本价格带。',
+      label: '竞争门槛',
+      value: categoryStats?.highReviewsShare ? `${formatPercent(categoryStats.highReviewsShare)} 高评论销量占比` : '评论门槛待确认',
+      desc: '这决定了后面是直接找便宜货，还是必须按主流款标准去找能配合打样的厂。',
     },
     {
-      label: '先杀项',
-      value: sourcing.brushCount || sourcing.petCount || sourcing.compactCount ? '先排错样本' : '先看打样条件',
-      desc: sourcing.brushCount || sourcing.petCount || sourcing.compactCount
-        ? `这批样本里混进了吹风梳、宠物吹水机或便携折叠路线，不能直接拿来问价。`
-        : '这批样本先看认证、打样和结构一致性，再决定要不要推进。',
+      label: '推荐厂家',
+      value: sourcing.recommendedSuppliers.length ? `${formatNumber(sourcing.recommendedSuppliers.length)} 家 shortlist` : 'shortlist 不足',
+      desc: sourcing.recommendedSuppliers.length
+        ? `这轮不是泛泛看货盘，而是已经先筛出 ${sourcing.recommendedSuppliers.length} 家更值得联系的供应商。`
+        : '当前供应商还不够稳定，继续盲目询盘没有意义。',
     },
   ];
 }
 
-function buildSourceModeFocus(seed, benchmark, sourcing) {
-  const priceBand = sourcing.priceBand;
+function buildSourceModeFocus(seed, benchmark, categoryStats, sourcing) {
+  const verdict = evaluateSourceVerdict(categoryStats, sourcing);
 
   return {
     title: '寻源判断',
     cards: [
       {
-        label: '需求先成立',
-        value: benchmark.detail.brand || benchmark.detail.asin,
-        desc: '先确认 Amazon 侧真实卖得动，再看供给能不能跟上，不反过来被 1688 价格带偏。',
+        label: '类目空间',
+        value: categoryStats?.top100Sales ? `${formatNumber(categoryStats.top100Sales)} /月` : '样本不足',
+        desc: '先确认这个类目盘子够不够大，值不值得继续往供应侧走。',
       },
       {
-        label: '供给深度',
-        value: priceBand ? `¥${priceBand.min} - ¥${priceBand.max}` : '样本不足',
-        desc: `当前样本总数 ${formatNumber(sourcing.totalCount)}，其中直机样本 ${formatNumber(sourcing.directCount)}，先看深度够不够，再看价格。`,
+        label: '竞争门槛',
+        value: categoryStats?.highReviewsShare ? `${formatPercent(categoryStats.highReviewsShare)}` : '待确认',
+        desc: '高评论销量占比越高，越不能靠低价货盘切入。',
       },
       {
-        label: '先排什么',
-        value: sourcing.brushCount > sourcing.petCount ? '吹风梳/造型器' : sourcing.petCount ? '宠物吹水机' : '错样本',
-        desc: '先排错误产品路线，再排认证和打样风险，不要一上来就看最低价。',
+        label: '结论',
+        value: verdict.label,
+        desc: verdict.desc,
       },
     ],
   };
 }
 
 function buildSourceCandidatePoolCards(sourcing) {
-  const directSample = sourcing.directItems.slice(0, 2);
-  const brushSample = sourcing.brushItems.slice(0, 2);
-  const petSample = sourcing.petItems.slice(0, 2);
-  const compactSample = sourcing.compactItems.slice(0, 2);
+  const cards = sourcing.recommendedSuppliers.slice(0, 3).map((supplier, index) => {
+    const supplierPriceBand = supplier.supplierPriceBand;
+    const priceLine = supplierPriceBand
+      ? supplierPriceBand.min === supplierPriceBand.max
+        ? `代表货盘价格约 ¥${supplierPriceBand.min}`
+        : `代表货盘价格约 ¥${supplierPriceBand.min} - ¥${supplierPriceBand.max}`
+      : '当前价格带还不稳定';
 
-  const cards = [];
-
-  cards.push({
-    eyebrow: '可打样样本',
-    title: '直机吹风机样本',
-    summary: sourcing.directCount
-      ? '这批样本最接近当前 Amazon 需求盘，后面真正值得进 shortlist 的主要是这里。'
-      : '当前还没有足够干净的直机样本，暂时不建议推进。',
-    points: sourcing.directCount
-      ? [
-          `样本数约 ${formatNumber(sourcing.directCount)} 条`,
-          ...directSample.map((item) => `${item.title} / ¥${item.price ?? '未知'} / ${item.seller}`),
-        ]
-      : ['当前没有足够干净的直机样本。'],
+    return {
+      eyebrow: `推荐厂家 ${index + 1}`,
+      title: supplier.seller,
+      summary: supplier.reasonLines[0] || '这家不是最便宜，但更接近当前 Amazon 目标款，适合先进第一轮问样。',
+      points: [
+        `代表货盘：${supplier.bestItem?.title || '暂无代表货盘'}`,
+        priceLine,
+        supplier.searchNames.length ? `命中供给词：${supplier.searchNames.slice(0, 3).join(' / ')}` : '命中供给词不足',
+        ...supplier.reasonLines.slice(1, 4),
+      ].filter(Boolean),
+      links: [
+        supplier.offerUrl ? { label: '货源链接', url: supplier.offerUrl } : null,
+        supplier.storeUrl ? { label: '店铺入口', url: supplier.storeUrl } : null,
+      ].filter(Boolean),
+    };
   });
 
   cards.push({
-    eyebrow: '观察样本',
-    title: '吹风梳/造型器样本',
-    summary: sourcing.brushCount
-      ? '这些样本说明供给盘会把“吹风机”需求拉到造型器路线，不能直接混进 shortlist。'
-      : '当前没有明显的吹风梳/造型器干扰样本。',
-    points: sourcing.brushCount
-      ? [
-          `样本数约 ${formatNumber(sourcing.brushCount)} 条`,
-          ...brushSample.map((item) => `${item.title} / ¥${item.price ?? '未知'} / ${item.seller}`),
-        ]
-      : ['当前没有明显的吹风梳干扰样本。'],
-    caution: sourcing.brushCount ? '这些样本只能拿来观察供给分叉，不能直接拿来问价。' : undefined,
-  });
-
-  if (sourcing.petCount) {
-    cards.push({
-      eyebrow: '排除项',
-      title: '宠物吹水机样本',
-      summary: '这批样本看起来也叫吹风机，但产品路线已经偏到宠物护理，必须直接排除。',
-      points: [
-        `样本数约 ${formatNumber(sourcing.petCount)} 条`,
-        ...petSample.map((item) => `${item.title} / ¥${item.price ?? '未知'} / ${item.seller}`),
-      ],
-      caution: '不属于当前产品路线，不能进 shortlist。',
-    });
-  } else if (sourcing.compactCount) {
-    cards.push({
-      eyebrow: '排除项',
-      title: '便携/折叠样本',
-      summary: '这批样本更偏 travel/compact，不适合作为当前主产品路线的打样对象。',
-      points: [
-        `样本数约 ${formatNumber(sourcing.compactCount)} 条`,
-        ...compactSample.map((item) => `${item.title} / ¥${item.price ?? '未知'} / ${item.seller}`),
-      ],
-      caution: '只能补充看价格，不该直接进打样。',
-    });
-  }
-
-  cards.push({
-    eyebrow: '先杀条件',
-    title: '这批样本先按什么淘汰',
-    summary: '寻源阶段最容易犯的错，不是没样本，而是把错样本当成好样本。',
+    eyebrow: '筛厂标准',
+    title: '为什么不是谁便宜就推谁',
+    summary: '这轮推荐看的不是最低价，而是它能不能接住当前 Amazon 机会。',
     points: [
-      '先排产品形态不对的样本，比如吹风梳、宠物吹水机、便携折叠。',
-      '再排认证和安全门槛过高但看不出保障的样本。',
-      '最后才看最低价，不要一开始就被低价吸引。',
+      '先看产品路线是否对得上，再看价格。',
+      '至少要能命中不止一个供给搜索词，避免只是碰巧搜出来。',
+      '能不能做扩散罩/负离子/高速这类主流配置，比单个报价更重要。',
+      '低价但路线不对的样本，只会把后面的打样和上架都带偏。',
     ],
+    caution: '当前 MCP 只直出货源详情 URL，店铺入口这里用的是 1688 店铺检索入口，不是直接旺铺页。',
   });
 
   return cards.slice(0, 4);
@@ -2492,19 +2671,19 @@ function buildSourceCandidatePoolCards(sourcing) {
 
 function buildSourceSectionCopy(seed, benchmark, sourcing) {
   return {
-    products: '先把 Amazon 种子盘和 Amazon 基准盘摆在一起，确认我们到底在找什么供给，不要先被 1688 标题带着走。',
-    modeFocus: '这里先回答“值不值得寻源”，而不是直接进入问价。',
-    candidates: '供给样本不是越多越好，关键是先分清哪些是可打样样本，哪些只是噪音。',
-    comparison: `这部分主要解释：为什么先拿 ${benchmark.detail.brand || benchmark.detail.asin} 定义需求，再回头看 1688。`,
-    category: '类目环境用来判断这条路的价格和评论门槛，不是用来替代供给判断。',
-    traffic: '这里同时看 Amazon 需求词和 1688 供给词，确认“有人搜”的东西是不是“有人在稳定做”。',
-    reviews: '评论区的价值在于把负评翻译成寻源筛样条件，比如结构、附件、过热和耐久。',
-    actions: `下面的动作默认都是为 ${seed.detail.brand || seed.detail.asin} 的寻源落地服务，目标是先筛准样本，再进入打样。`,
-    roadmap: '寻源的正确顺序是：先筛错样本，再定 shortlist，再打样和成本复核。',
+    products: '先把 Amazon 种子盘和基准盘摆在一起，明确我们要找的是哪种产品路线，而不是先在 1688 看谁便宜。',
+    modeFocus: '这里先回答“这个机会值不值得找厂”，再回答“该先找哪几家厂”。',
+    candidates: '这里不是供给噪音池，而是第一轮更值得联系的供应商 shortlist。',
+    comparison: `这部分主要解释：为什么先拿 ${benchmark.detail.brand || benchmark.detail.asin} 定义目标款，再去筛供应商。`,
+    category: '类目环境决定这是不是值得做的市场，也决定后面该找什么水平的厂。',
+    traffic: '这里同时看 Amazon 需求词和 1688 供给词，避免出现“有货但没人买”或“有人买但货盘不对”的错位。',
+    reviews: '评论区的作用不是改文案，而是把真实负评翻译成找厂和打样条件。',
+    actions: `下面的动作默认都是为 ${seed.detail.brand || seed.detail.asin} 的寻源落地服务，目标是先找对厂，再谈成本。`,
+    roadmap: '寻源的正确顺序是：定目标款、联系 shortlist、打样验收、再做成本和认证复核。',
   };
 }
 
-function buildSourceComparisonRows(seed, benchmark, genericKeywordPair, sourcing) {
+function buildSourceComparisonRows(seed, benchmark, genericKeywordPair, sourcing, categoryStats) {
   const priceBand = sourcing.priceBand;
 
   return [
@@ -2512,42 +2691,40 @@ function buildSourceComparisonRows(seed, benchmark, genericKeywordPair, sourcing
       title: 'Amazon 目标价带',
       val1: formatCurrency(seed.detail.price),
       val2: formatCurrency(benchmark.detail.price),
-      desc: '先用 Amazon 两支真实样本定义目标价格带，后面 1688 样本只拿来验证能不能做，不反过来定义需求。',
+      desc: '先用 Amazon 真实成交价定义目标款客单，供应侧只负责验证这条路能不能做。',
       highlight: compareByBetter(seed, benchmark, (dataset) => dataset.detail.price, true),
     },
     {
       title: 'Amazon 需求强度',
       val1: `${formatNumber(seed.detail.monthlySales)} / ${formatCurrency(seed.detail.monthlyRevenue)}`,
       val2: `${formatNumber(benchmark.detail.monthlySales)} / ${formatCurrency(benchmark.detail.monthlyRevenue)}`,
-      desc: '先确认这条 Amazon 路是真的有人买，再决定值不值得进入供给验证。',
+      desc: '两支样本都卖得动，说明先找供给是有意义的，不是在空找货。',
       highlight: compareByBetter(seed, benchmark, (dataset) => dataset.detail.monthlySales),
     },
     {
-      title: '核心泛词自然位',
-      val1: genericKeywordPair?.leftLabel || '未进样本',
-      val2: genericKeywordPair?.rightLabel || '未进样本',
-      desc: genericKeywordPair
-        ? `以 ${genericKeywordPair.keyword} 为例，先看 Amazon 侧免费流量是不是已经成立。`
-        : '当前没有足够稳定的泛词样本可做自然位判断。',
-      highlight: genericKeywordPair?.winner,
+      title: '评论门槛',
+      val1: `${formatNumber(seed.detail.reviewCount)} / ${seed.detail.rating?.toFixed(1) || '未知'}`,
+      val2: `${formatNumber(benchmark.detail.reviewCount)} / ${benchmark.detail.rating?.toFixed(1) || '未知'}`,
+      desc: `类目高评论销量占比约 ${formatPercent(categoryStats?.highReviewsShare)}，所以找厂不能只看能不能出货，还要看能不能把质量做稳。`,
+      highlight: compareByBetter(seed, benchmark, (dataset) => dataset.detail.reviewCount),
     },
     {
-      title: '1688 直机样本数',
-      val1: `${formatNumber(sourcing.directCount)} 条`,
-      val2: `${formatNumber(sourcing.totalCount)} 条总样本`,
-      desc: '供给池里真正接近当前产品路线的样本越多，越说明这条路有进一步筛样价值。',
+      title: '推荐厂家数',
+      val1: `${formatNumber(sourcing.recommendedSuppliers.length)} 家 shortlist`,
+      val2: `${formatNumber(sourcing.uniqueSellerCount)} 家供给卖家`,
+      desc: '真正值得联系的厂家不会等于全部卖家数，shortlist 越清晰，后面打样越高效。',
     },
     {
-      title: '1688 价格带',
+      title: '1688 供给参考带',
       val1: priceBand ? `¥${priceBand.min} - ¥${priceBand.max}` : '样本不足',
       val2: priceBand ? `中位约 ¥${priceBand.median}` : '样本不足',
-      desc: '这里只是看供给参考带，不代表最终成交价或 BOM 成本。',
+      desc: '这里只拿来做第一轮供给锚点，不直接等于最终 BOM 或落地利润。',
     },
     {
-      title: '供给污染度',
+      title: '错样本压力',
       val1: `吹风梳 ${formatNumber(sourcing.brushCount)} / 宠物 ${formatNumber(sourcing.petCount)}`,
-      val2: `便携折叠 ${formatNumber(sourcing.compactCount)} / 卖家 ${formatNumber(sourcing.uniqueSellerCount)}`,
-      desc: '如果错样本太多，说明搜索词本身会把你带偏，寻源第一步就要先筛词和筛形态。',
+      val2: `便携折叠 ${formatNumber(sourcing.compactCount)} / 直机 ${formatNumber(sourcing.directCount)}`,
+      desc: '如果错样本多，说明这条路必须先把产品定义和筛厂口径讲清楚，再去谈价格。',
     },
   ];
 }
@@ -2573,19 +2750,18 @@ function buildSourceTrafficColumns(seed, benchmark, keywordSets, keywordIntel, s
       points: sourcing.searchNames.length ? sourcing.searchNames : ['当前没有稳定的供给搜索词。'],
     },
     {
-      eyebrow: '关键词门槛',
-      title: detailPoints.length ? '这批需求词值得继续跟' : '关键词细节样本不足',
-      points: detailPoints.length ? detailPoints : ['当前还没有足够稳定的关键词细节样本。'],
+      eyebrow: '要找什么货',
+      title: sourcing.sourceTargets.labels.length ? '主流配置要对得上' : '先对齐主流配置',
+      points: sourcing.sourceTargets.labels.length
+        ? sourcing.sourceTargets.labels.map((item) => `${item}: 这是当前 shortlist 重点要对齐的配置`)
+        : ['先围绕扩散罩、负离子、高速这类主流配置去找厂。'],
     },
     {
-      eyebrow: '供给深度',
-      title: sourcing.directCount ? '先看直机样本，再看杂样本' : '当前供给样本偏杂',
-      points: [
-        `直机样本 ${formatNumber(sourcing.directCount)} 条`,
-        `吹风梳/造型器 ${formatNumber(sourcing.brushCount)} 条`,
-        `宠物吹水机 ${formatNumber(sourcing.petCount)} 条`,
-        `便携/折叠 ${formatNumber(sourcing.compactCount)} 条`,
-      ],
+      eyebrow: '供应商覆盖',
+      title: sourcing.recommendedSuppliers.length ? '先联系 shortlist，不先泛问' : 'shortlist 还不够',
+      points: sourcing.recommendedSuppliers.length
+        ? sourcing.recommendedSuppliers.map((supplier) => `${supplier.seller}: ${supplier.searchNames.slice(0, 2).join(' / ') || '已进 shortlist'}`)
+        : ['当前还没有足够可信的厂家 shortlist。'],
     },
   ];
 }
@@ -2593,16 +2769,19 @@ function buildSourceTrafficColumns(seed, benchmark, keywordSets, keywordIntel, s
 function buildSourceTrafficInsight(seed, benchmark, categoryStats, keywordIntel, sourcing) {
   const topKeyword = keywordIntel[0]?.detail;
   const priceBand = sourcing.priceBand;
+  const firstSupplier = sourcing.recommendedSuppliers[0];
 
   return [
-    `先看需求：${categoryStats?.name || '当前类目'} Top100 月销量约 ${formatNumber(categoryStats?.top100Sales)}，中位价 ${formatCurrency(categoryStats?.medianPrice)}。`,
+    `先看机会：${categoryStats?.name || '当前类目'} Top100 月销量约 ${formatNumber(categoryStats?.top100Sales)}，中位价 ${formatCurrency(categoryStats?.medianPrice)}。`,
     topKeyword
-      ? `核心词 ${topKeyword.keyword} 月搜索量约 ${formatNumber(topKeyword.monthlyVolume)}，说明需求盘不是问题。`
-      : '核心词样本暂时不足。',
+      ? `再看需求词：${topKeyword.keyword} 月搜索量约 ${formatNumber(topKeyword.monthlyVolume)}，说明这条路本身有人找。`
+      : '再看需求词：当前核心词样本不足。',
     priceBand
-      ? `再看供给：1688 直机样本价格主要落在 ¥${priceBand.min} - ¥${priceBand.max}，说明市场上有人在做，但样本还需要人工二筛。`
-      : '再看供给：当前还没形成稳定价格带。',
-    `结论：先拿 ${benchmark.detail.brand || benchmark.detail.asin} 定义目标产品，再从 1688 里筛直机样本，不要直接拿最低价样本推进。`,
+      ? `再看供给：1688 当前直机供给参考带约 ¥${priceBand.min} - ¥${priceBand.max}，已经能拉出第一轮 shortlist。`
+      : '再看供给：当前还没形成稳定的供给参考带。',
+    firstSupplier
+      ? `所以这次不是继续泛搜，而是先联系 ${firstSupplier.seller}${sourcing.recommendedSuppliers[1] ? `、${sourcing.recommendedSuppliers[1].seller}` : ''}，验证它们能不能接住目标款。`
+      : '所以这次还不该急着大面积询盘，先把 shortlist 再收紧。',
   ].join(' ');
 }
 
@@ -2640,30 +2819,33 @@ function buildSourceReviewBlocks(seed, benchmark) {
 
 function buildSourceActionCards(seed, benchmark, keywordSets, sourcing, categoryStats) {
   const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || '核心词';
+  const topSupplier = sourcing.recommendedSuppliers[0];
 
   return [
     {
       priority: 'P0',
-      title: '先筛错样本，不先问最低价',
-      desc: '先把吹风梳、宠物吹水机、便携折叠这些错路线样本排掉，再谈真正可打样的对象。',
+      title: '先定目标款，再联系 shortlist',
+      desc: topSupplier
+        ? `第一轮先联系 ${topSupplier.seller}${sourcing.recommendedSuppliers[1] ? `、${sourcing.recommendedSuppliers[1].seller}` : ''}，不要把所有卖家都问一遍。`
+        : '当前先不要大面积询盘，先把推荐厂家 shortlist 做出来。',
       accentClass: 'border-t-red-500',
     },
     {
       priority: 'P1',
       title: `围绕 ${scenarioKeyword} 对齐产品定义`,
-      desc: `供给样本要能支撑 ${scenarioKeyword} 这类真实需求词和 Amazon 页面承诺，否则再便宜也不该推进。`,
+      desc: `找厂时先把 ${scenarioKeyword} 对应的页面承诺和主流配置说清楚，否则工厂给出来的会是另一条产品路线。`,
       accentClass: 'border-t-orange-400',
     },
     {
       priority: 'P1',
       title: '按 Amazon 负评写打样验收标准',
-      desc: '把过热、附件体验、噪音、耐久这些高频负评直接变成验收项，而不是打样只看外观。',
+      desc: '把过热、附件体验、噪音、耐久这些高频负评直接变成样品验收清单，而不是只看图片和报价。',
       accentClass: 'border-t-blue-500',
     },
     {
       priority: 'P2',
       title: categoryStats?.medianPrice ? `结合中位价 ${formatCurrency(categoryStats.medianPrice)} 做成本倒推` : '做成本倒推',
-      desc: '别用 1688 单价直接想利润。后面要把 Amazon 价格带、FBA、广告和退货一起算进去，才知道值不值得做。',
+      desc: '别拿 1688 单价直接当利润模型。最后一定要把 Amazon 客单、FBA、广告、退货和认证一起算进去。',
       accentClass: 'border-t-emerald-500',
     },
   ];
@@ -2671,29 +2853,30 @@ function buildSourceActionCards(seed, benchmark, keywordSets, sourcing, category
 
 function buildSourceRoadmapSteps(seed, benchmark, keywordSets, sourcing) {
   const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || '核心词';
+  const topSuppliers = sourcing.recommendedSuppliers.slice(0, 2).map((item) => item.seller).filter(Boolean);
 
   return [
     {
       phase: 'Step 1',
-      title: '先筛 1688 错样本',
-      desc: '先排吹风梳、宠物吹水机、便携折叠这些错路线样本，只保留直机吹风机 shortlist。',
+      title: '先定义目标款',
+      desc: `先围绕 ${scenarioKeyword} 和 Amazon 基准盘，把要找的结构、附件和体验写清楚，再去找厂。`,
     },
     {
       phase: 'Step 2',
-      title: `围绕 ${scenarioKeyword} 对齐产品和页面`,
-      desc: '把 Amazon 真实需求词、附件组合和页面承诺翻译成供应侧要找的结构和配置。',
+      title: '联系第一轮推荐厂家',
+      desc: topSuppliers.length
+        ? `第一轮先联系 ${topSuppliers.join('、')}，先看它们能不能按目标款给样。`
+        : '当前先不要大面积联系工厂，先把 shortlist 再收紧。',
     },
     {
       phase: 'Step 3',
-      title: '建立打样 shortlist',
-      desc: sourcing.directCount
-        ? `当前约 ${formatNumber(sourcing.directCount)} 条直机样本可进 shortlist，下一步先选 2 到 4 条进打样。`
-        : '当前还没有足够干净的直机样本，先继续筛样再谈打样。',
+      title: '做样品验收和对比',
+      desc: '样品回来后重点看附件、过热、噪音、耐久和页面承诺能不能对上，而不是只比外观。',
     },
     {
       phase: 'Step 4',
-      title: '做认证、验收和成本复核',
-      desc: '最后再进入认证风险、打样验收、落地成本和 kill criteria，不要在这之前就默认能做。',
+      title: '最后再做认证和成本复核',
+      desc: '等 shortlist 和样品都站住之后，再进入认证风险、成本模型和 kill criteria，不要顺序反了。',
     },
   ];
 }
@@ -2722,33 +2905,55 @@ function collectSourceSearchNames(detail, keywordSets) {
   const genericKeyword = keywordSets.generic[0]?.keyword;
   const safeScenarioKeyword = scenarioKeyword && tokenize(scenarioKeyword).length >= 2 ? scenarioKeyword : null;
   const safeGenericKeyword = genericKeyword && tokenize(genericKeyword).length >= 2 ? genericKeyword : null;
+  const titleBlob = `${detail.title || ''} ${detail.description || ''}`;
+  const chineseHints = [];
+
+  if (/diffuser/i.test(titleBlob)) {
+    chineseHints.push('吹风机 扩散罩');
+  }
+  if (/ionic/i.test(titleBlob)) {
+    chineseHints.push('负离子 吹风机');
+  }
+  if (/quiet|noise/i.test(titleBlob)) {
+    chineseHints.push('静音 吹风机');
+  }
+  if (/fast dry|high speed|1875w|watt/i.test(titleBlob)) {
+    chineseHints.push('高速 吹风机');
+  }
 
   const names = [
     derive1688SearchName(detail, keywordSets),
     safeScenarioKeyword,
     safeGenericKeyword,
     normalizeKeyword(`${detail.attributes?.Wattage || ''} ${detail.category || detail.subCategoryName || ''}`.trim()),
+    ...chineseHints,
   ].filter(Boolean);
 
-  return [...new Set(names)].slice(0, 3);
+  return [...new Set(names)].slice(0, 4);
 }
 
-async function fetchSourcingIntel(searchNames) {
+async function fetchSourcingIntel(searchNames, seedDetail, benchmarkDetail, keywordSets) {
   const batches = await Promise.all(
     searchNames.map(async (searchName) => {
-      const sourcingTool = await callSorftimeTool('ali1688_similar_product', {
-        searchName,
-        page: 1,
-      });
-      const rawItems = parseSourcingItems(sourcingTool.text);
-      return sanitizeSourcingItems(rawItems, searchName).map((item) => ({
-        ...item,
-        matchedSearchName: searchName,
-      }));
+      const pages = await Promise.all(
+        [1, 2].map(async (page) => {
+          const sourcingTool = await callSorftimeTool('ali1688_similar_product', {
+            searchName,
+            page,
+          });
+          const rawItems = parseSourcingItems(sourcingTool.text);
+          return sanitizeSourcingItems(rawItems, searchName).map((item) => ({
+            ...item,
+            matchedSearchName: searchName,
+          }));
+        }),
+      );
+
+      return pages.flat();
     }),
   );
 
-  return analyzeSourcing(searchNames, batches.flat());
+  return analyzeSourcing(searchNames, batches.flat(), seedDetail, benchmarkDetail, keywordSets);
 }
 
 function summarizeCandidateRole(candidate, index) {
@@ -2945,30 +3150,30 @@ function buildFindModeReport({ session, left, right, categoryReport, keywordInte
 function buildSourceModeReport({ session, left, right, categoryReport, keywordIntel, sourcing, extraNote, competitorCandidates }) {
   const keywordSets = chooseKeywordSets([left, right]);
   const genericKeywordPair = buildGenericKeywordPair(left, right, keywordSets);
-  const modeFocus = buildSourceModeFocus(left, right, sourcing);
+  const modeFocus = buildSourceModeFocus(left, right, categoryReport.stats, sourcing);
 
   return {
     session,
     report: {
       meta: buildBaseReportMeta('source'),
-      title: buildSourceTitle(left, right, sourcing),
+      title: buildSourceTitle(left, right, categoryReport.stats, sourcing),
       summary: buildSourceSummary(left, right, categoryReport.stats, keywordIntel, sourcing, extraNote),
       labels: {
         left: left.detail.brand || left.detail.asin,
         right: right.detail.brand || right.detail.asin,
       },
       sectionCopy: buildSourceSectionCopy(left, right, sourcing),
-      heroCards: buildSourceHeroCards(left, right, sourcing),
+      heroCards: buildSourceHeroCards(left, right, categoryReport.stats, sourcing),
       navItems: buildNavItems('source'),
       modeFocusTitle: modeFocus.title,
       modeFocusCards: modeFocus.cards,
-      candidatePoolTitle: '供给样本',
+      candidatePoolTitle: '推荐厂家',
       candidatePoolCards: buildSourceCandidatePoolCards(sourcing),
       products: [
         buildProductCard(left.detail, summarizeReviewThemes(left.positiveReviews)),
         buildProductCard(right.detail, summarizeReviewThemes(right.positiveReviews)),
       ],
-      comparisonRows: buildSourceComparisonRows(left, right, genericKeywordPair, sourcing),
+      comparisonRows: buildSourceComparisonRows(left, right, genericKeywordPair, sourcing, categoryReport.stats),
       categoryCards: buildCategoryCards(categoryReport.stats, left, right),
       categoryRows: buildCategoryRows(left, right, categoryReport.stats),
       trafficColumns: buildSourceTrafficColumns(left, right, keywordSets, keywordIntel, sourcing),
@@ -3041,7 +3246,7 @@ export async function buildLiveReport(sessionInput) {
   }
 
   const sourceSearchNames = collectSourceSearchNames(seed.detail, keywordSets);
-  const sourcing = await fetchSourcingIntel(sourceSearchNames);
+  const sourcing = await fetchSourcingIntel(sourceSearchNames, seed.detail, benchmark.detail, keywordSets);
 
   return buildSourceModeReport({
     session: { ...sessionInput, asins: [seedAsin, competitor.detail.asin], query: `${seedAsin}, ${competitor.detail.asin}` },
@@ -3050,7 +3255,7 @@ export async function buildLiveReport(sessionInput) {
     categoryReport,
     keywordIntel,
     sourcing,
-    extraNote: `Amazon 侧先拿 ${competitor.detail.asin} 做对照，1688 侧再用 “${sourceSearchNames.join(' / ')}” 拉相似供给作为落地锚点。`,
+    extraNote: `Amazon 侧先拿 ${competitor.detail.asin} 定义目标款，1688 侧再用 “${sourceSearchNames.join(' / ')}” 拉供给，并只保留第一轮更值得联系的厂家 shortlist。`,
     competitorCandidates,
   });
 }

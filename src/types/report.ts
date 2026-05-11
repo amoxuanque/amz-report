@@ -69,6 +69,10 @@ export interface ReportCandidateCard {
   title: string;
   summary: string;
   points: string[];
+  links?: Array<{
+    label: string;
+    url: string;
+  }>;
   caution?: string;
 }
 
