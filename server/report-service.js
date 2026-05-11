@@ -26,7 +26,7 @@ const REVIEW_THEMES = [
 
 function buildNavItems(mode) {
   const modeLabel = mode === 'compare' ? '模式判断' : mode === 'find' ? '锁定逻辑' : '寻源判断';
-  return [
+  const items = [
     { id: '产品卡', label: '产品卡' },
     { id: modeLabel, label: modeLabel },
     { id: '核心对比', label: '核心对比' },
@@ -36,6 +36,12 @@ function buildNavItems(mode) {
     { id: '执行建议', label: '执行建议' },
     { id: '执行路径', label: '执行路径' },
   ];
+
+  if (mode === 'find') {
+    items.splice(2, 0, { id: '候选池', label: '候选池' });
+  }
+
+  return items;
 }
 
 function safeJsonParse(text, fallback = null) {
@@ -415,6 +421,44 @@ function tokenize(text) {
     .filter(Boolean);
 }
 
+function countTokenOverlap(leftText, rightText) {
+  const rightTokens = new Set(tokenize(rightText));
+  return [...new Set(tokenize(leftText))].filter((token) => rightTokens.has(token)).length;
+}
+
+function buildKeywordTermSet(dataset) {
+  return new Set([
+    ...dataset.trafficTerms.map((item) => normalizeKeyword(item.keyword)),
+    ...dataset.competitorKeywords.map((item) => normalizeKeyword(item.keyword)),
+  ].filter(Boolean));
+}
+
+function getScenarioTermsFromSet(keywordSet) {
+  return [...keywordSet].filter((keyword) => isScenarioKeyword(keyword));
+}
+
+function detectFindMismatch(seedTitle, candidateTitle) {
+  const seedTokens = new Set(tokenize(seedTitle));
+  const candidateTokens = new Set(tokenize(candidateTitle));
+
+  const brushMismatch =
+    (candidateTokens.has('brush') || candidateTokens.has('styler') || candidateTokens.has('volumizer')) &&
+    !(seedTokens.has('brush') || seedTokens.has('styler') || seedTokens.has('volumizer'));
+  const travelMismatch =
+    (candidateTokens.has('compact') || candidateTokens.has('folding')) &&
+    !(seedTokens.has('compact') || seedTokens.has('folding'));
+
+  if (brushMismatch) {
+    return '形态不一致，更像刷梳/造型器路线，不适合作为第一竞对。';
+  }
+
+  if (travelMismatch) {
+    return '更偏 travel/compact 路线，流量有重叠，但不是当前主打法的直接竞对。';
+  }
+
+  return null;
+}
+
 function isBrandKeyword(keyword, brands) {
   const normalized = normalizeKeyword(keyword);
   return brands.some((brand) => {
@@ -530,6 +574,20 @@ async function fetchProductDataset(asin, site) {
     positiveReviews: parseReviewList(positiveReviewsTool.text),
     negativeReviews: parseReviewList(negativeReviewsTool.text),
     trend: parseTrend(trendTool.text),
+    trafficTerms: parseTrafficTerms(trafficTool.text),
+    competitorKeywords: parseCompetitorKeywords(competitorKeywordsTool.text),
+  };
+}
+
+async function fetchCandidateSignal(asin, site) {
+  const [detailTool, trafficTool, competitorKeywordsTool] = await Promise.all([
+    callSorftimeTool('product_detail', { asin, amzSite: site }),
+    callSorftimeTool('product_traffic_terms', { asin, amzSite: site, page: 1 }),
+    callSorftimeTool('competitor_product_keywords', { asin, keywordSupportSite: site, page: 1 }),
+  ]);
+
+  return {
+    detail: parseProductDetail(detailTool.text, asin),
     trafficTerms: parseTrafficTerms(trafficTool.text),
     competitorKeywords: parseCompetitorKeywords(competitorKeywordsTool.text),
   };
@@ -1256,9 +1314,9 @@ function buildModeFocus(mode, left, right, keywordSets, categoryReport, sourcing
         },
         {
           label: 'Backup Watchlist',
-          value: secondCandidate?.brand || secondCandidate?.asin || '暂无第二候选',
+          value: secondCandidate?.detail?.brand || secondCandidate?.detail?.asin || '暂无第二候选',
           desc: secondCandidate
-            ? `${secondCandidate.asin} 也是可跟踪样本，但当前优先级低于第一竞对。`
+            ? `${secondCandidate.detail.asin} 也是可跟踪样本，但当前优先级低于第一竞对。`
             : '当前类目里没有找到足够强的第二候选。',
         },
         {
@@ -1829,6 +1887,339 @@ function buildCompareRoadmapSteps(left, right, keywordSets) {
   ];
 }
 
+function buildFindTitle(seed, primary) {
+  return `${seed.detail.brand || seed.detail.asin} 的第一竞对是 ${primary.detail.brand || primary.detail.asin}，先盯它，不要先盯整类目。`;
+}
+
+function buildFindSummary(seed, primary, categoryStats, candidates, keywordIntel, extraNote) {
+  const topKeyword = keywordIntel[0]?.detail;
+  const second = candidates[1];
+
+  return [
+    `这次不是直接做双 ASIN 对比，而是先回答一个更重要的问题：${seed.detail.brand || seed.detail.asin} 现在最该盯谁。`,
+    `${seed.detail.brand || seed.detail.asin} 当前月销约 ${formatNumber(seed.detail.monthlySales)}，价格 ${formatCurrency(seed.detail.price)}；锁定的第一竞对 ${primary.detail.brand || primary.detail.asin} 当前月销约 ${formatNumber(primary.detail.monthlySales)}，价格 ${formatCurrency(primary.detail.price)}。`,
+    categoryStats?.name
+      ? `两者都在 ${categoryStats.name}，类目中位价约 ${formatCurrency(categoryStats.medianPrice)}，高评论产品拿走了 ${formatPercent(categoryStats.highReviewsShare)} 的销量。`
+      : '当前类目统计样本还不够完整。',
+    topKeyword
+      ? `从词路看，${topKeyword.keyword} 月搜索量约 ${formatNumber(topKeyword.monthlyVolume)}，这说明这个类目该先盯“谁在吃这些词”，而不是先盯“谁看起来像”。`
+      : '从词路看，当前关键词细节样本还不够完整。',
+    `${primary.detail.brand || primary.detail.asin} 被锁成第一竞对，核心原因是它和种子 ASIN 在价格带、标题结构、共享高意图词和类目位置上都最接近。`,
+    second
+      ? `${second.detail.brand || second.detail.asin} 也值得进 watchlist，但更适合作为第二观察位，不是第一优先。`
+      : '当前没有足够强的第二观察位样本。',
+    extraNote,
+  ].filter(Boolean).join(' ');
+}
+
+function buildFindModeFocus(seed, primary, candidates, keywordSets) {
+  const second = candidates[1];
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || '核心词';
+
+  return {
+    title: '锁定逻辑',
+    cards: [
+      {
+        label: '第一竞对',
+        value: primary.detail.brand || primary.detail.asin,
+        desc: '不是因为它卖得最多，而是因为它和种子 ASIN 最像同一场仗里的对手。',
+      },
+      {
+        label: '第二观察位',
+        value: second?.detail.brand || second?.detail.asin || '暂无更强候选',
+        desc: second
+          ? `${second.detail.brand || second.detail.asin} 可以进 watchlist，但优先级低于第一竞对。`
+          : '当前候选池里还没有足够强的第二观察位。',
+      },
+      {
+        label: '先盯什么',
+        value: scenarioKeyword,
+        desc: `先盯 ${scenarioKeyword}、价格动作和评论变化，再决定要学它的产品路，还是学它的词路。`,
+      },
+    ],
+  };
+}
+
+function buildFindHeroCards(seed, primary, candidates, keywordSets) {
+  const second = candidates[1];
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || '核心词';
+
+  return [
+    {
+      label: '第一竞对',
+      value: primary.detail.brand || primary.detail.asin,
+      desc: `当前月销约 ${formatNumber(primary.detail.monthlySales)}，价格 ${formatCurrency(primary.detail.price)}，是最该先盯的样本。`,
+    },
+    {
+      label: 'Watchlist',
+      value: second?.detail?.brand || second?.detail?.asin || '暂无第二观察位',
+      desc: second
+        ? '除了第一竞对，还要保留第二观察位，避免把个别样本误当成全类目答案。'
+        : '当前还缺第二观察位，后面需要继续补候选池。',
+    },
+    {
+      label: '先盯什么',
+      value: scenarioKeyword,
+      desc: `先盯 ${scenarioKeyword}、价格动作和评论变化，再判断该学它的产品路还是词路。`,
+    },
+  ];
+}
+
+function buildFindCandidatePoolCards(candidates) {
+  const directCandidates = candidates.filter((candidate) => candidate.role !== '排除项').slice(0, 3);
+  const excludedCandidate = candidates.find((candidate) => candidate.role === '排除项');
+  const cards = [...directCandidates];
+
+  if (excludedCandidate) {
+    cards.push(excludedCandidate);
+  }
+
+  return cards.slice(0, 4).map((candidate, index) => ({
+    eyebrow: index === 0 ? '第一优先' : candidate.role,
+    title: `${candidate.detail.brand || candidate.detail.asin} / ${candidate.detail.asin}`,
+    summary:
+      candidate.role === '排除项'
+        ? '这支样本流量可能有重叠，但产品路线不够像，不适合作为第一竞对。'
+        : `${candidate.detail.brand || candidate.detail.asin} 值得盯，因为它和种子 ASIN 在词路、价格带或产品定义上足够接近。`,
+    points: [
+      `月销 ${formatNumber(candidate.detail.monthlySales)} / 价格 ${formatCurrency(candidate.detail.price)} / 类目排名 ${formatRank(candidate.detail)}`,
+      `共享词约 ${formatNumber(candidate.sharedKeywordCount)} 个，核心场景词重合约 ${formatNumber(candidate.sharedScenarioCount)} 个`,
+      ...candidate.reasonLines,
+    ].slice(0, 5),
+    caution: candidate.mismatchReason || undefined,
+  }));
+}
+
+function buildFindSectionCopy(seed, primary) {
+  return {
+    products: `先看种子 ASIN 和锁定出来的第一竞对，确认它们到底是不是同一类打法。`,
+    modeFocus: '这里先回答“为什么锁它”，而不是直接进入双 ASIN 对比。',
+    candidates: '候选池不是越多越好，而是要分清谁是第一竞对、谁只是观察样本、谁应该排除。',
+    comparison: `这一段主要解释：为什么 ${primary.detail.brand || primary.detail.asin} 是当前最值得盯的第一竞对。`,
+    category: '类目环境不是用来看热闹的，而是用来判断这支竞对值不值得当长期参考样本。',
+    traffic: '真正要看的不是“它有没有流量”，而是它和种子 ASIN 到底抢的是不是同一批词。',
+    reviews: `评论区主要用来判断：这支竞对的优势是真优势，还是只是靠价格或广告短期撑起来。`,
+    actions: `下面的建议默认都是围绕 ${seed.detail.brand || seed.detail.asin} 展开，目标是先盯对人，再抄对打法。`,
+    roadmap: '找竞对的最终目的不是找一支 ASIN 收藏起来，而是建立一套可持续跟踪的 watchlist。',
+  };
+}
+
+function buildFindComparisonRows(seed, primary, candidates, genericKeywordPair) {
+  const second = candidates[1];
+  const sharedTerms = candidates[0]?.sharedScenarioTerms || [];
+
+  return [
+    {
+      title: '为什么先锁它',
+      val1: seed.detail.brand || seed.detail.asin,
+      val2: primary.detail.brand || primary.detail.asin,
+      desc: `${primary.detail.brand || primary.detail.asin} 和种子 ASIN 同类目、价格带接近、标题结构接近，且共享的高意图词更多。`,
+    },
+    {
+      title: '价格带',
+      val1: formatCurrency(seed.detail.price),
+      val2: formatCurrency(primary.detail.price),
+      desc: '价格带接近，说明两者更可能在同一批用户心智里竞争。',
+      highlight: compareByBetter(seed, primary, (dataset) => dataset.detail.price, true),
+    },
+    {
+      title: '月销量 / 类目排名',
+      val1: `${formatNumber(seed.detail.monthlySales)} / ${formatRank(seed.detail)}`,
+      val2: `${formatNumber(primary.detail.monthlySales)} / ${formatRank(primary.detail)}`,
+      desc: '这里不是只看谁卖得多，而是看它是不是已经在类目里站稳。',
+      highlight: compareByBetter(seed, primary, (dataset) => dataset.detail.monthlySales),
+    },
+    {
+      title: '评论基础',
+      val1: `${formatNumber(seed.detail.reviewCount)} / ${seed.detail.rating?.toFixed(1) || '未知'}`,
+      val2: `${formatNumber(primary.detail.reviewCount)} / ${primary.detail.rating?.toFixed(1) || '未知'}`,
+      desc: '评论差距决定它是“真标杆”，还是“短期爬坡样本”。',
+      highlight: compareByBetter(seed, primary, (dataset) => dataset.detail.reviewCount),
+    },
+    {
+      title: '共享高意图词',
+      val1: sharedTerms.length ? sharedTerms.join(' / ') : '样本不足',
+      val2: `${formatNumber(candidates[0]?.sharedScenarioCount)} 个重合`,
+      desc: '高意图词重合越多，越说明它们在抢的是同一类转化需求。',
+    },
+    {
+      title: '核心泛词自然位',
+      val1: genericKeywordPair?.leftLabel || '未进样本',
+      val2: genericKeywordPair?.rightLabel || '未进样本',
+      desc: genericKeywordPair
+        ? `以 ${genericKeywordPair.keyword} 为例，先看谁已经在免费流量里站住。`
+        : '当前没有足够稳定的泛词样本可做自然位判断。',
+      highlight: genericKeywordPair?.winner,
+    },
+    {
+      title: '第二观察位',
+      val1: second?.detail.brand || '暂无',
+      val2: second?.sharedScenarioTerms?.slice(0, 2).join(' / ') || '暂无',
+      desc: second
+        ? `${second.detail.brand || second.detail.asin} 可以进 watchlist，但当前更适合拿来补样本，不适合当第一竞对。`
+        : '当前候选池里没有更强的第二观察位。',
+    },
+  ];
+}
+
+function buildFindTrafficColumns(seed, primary, candidates, keywordSets, keywordIntel) {
+  const sharedScenarioTerms = candidates[0]?.sharedScenarioTerms || [];
+  const detailPoints = keywordIntel.slice(0, 3).map((item) => {
+    const detail = item.detail;
+    return `${detail.keyword || item.keyword}: 月搜 ${formatNumber(detail.monthlyVolume)} / CPC ${formatCurrency(detail.cpc)} / 结果数 ${formatNumber(detail.resultCount)}`;
+  });
+  const second = candidates[1];
+
+  return [
+    {
+      eyebrow: '为什么锁它',
+      title: sharedScenarioTerms.length ? '共享高意图词足够多' : '共享词样本不足',
+      points: sharedScenarioTerms.length
+        ? sharedScenarioTerms.slice(0, 4).map((term) => `${term}: 种子 ASIN 和第一竞对都在吃这类词`)
+        : ['当前还没有足够强的共享场景词样本。'],
+    },
+    {
+      eyebrow: '该先盯哪些词',
+      title: keywordSets.scenario.length ? '先盯高意图词，不先盯最大泛词' : '先盯核心泛词',
+      accent: true,
+      points: keywordSets.scenario.length
+        ? keywordSets.scenario.slice(0, 4).map((item) => item.keyword)
+        : keywordSets.generic.slice(0, 4).map((item) => item.keyword),
+    },
+    {
+      eyebrow: '关键词门槛',
+      title: detailPoints.length ? '这几个词最值得做监控' : '关键词细节样本不足',
+      points: detailPoints.length ? detailPoints : ['当前还没有足够稳定的关键词细节样本。'],
+    },
+    {
+      eyebrow: 'Watchlist',
+      title: second ? `${second.detail.brand || second.detail.asin} 作为第二观察位` : '当前暂无第二观察位',
+      points: second
+        ? [
+            `共享词约 ${formatNumber(second.sharedKeywordCount)} 个`,
+            `共享场景词：${second.sharedScenarioTerms.slice(0, 3).join(' / ') || '暂无'}`,
+            second.mismatchReason || '可以补充观察，但先不作为第一竞对。',
+          ]
+        : ['当前类目里没有足够可信的第二观察位。'],
+    },
+  ];
+}
+
+function buildFindTrafficInsight(seed, primary, candidates, categoryStats, keywordIntel) {
+  const topKeyword = keywordIntel[0]?.detail;
+  const second = candidates[1];
+
+  return [
+    `先看大盘：${categoryStats?.name || '当前类目'} Top100 月销量约 ${formatNumber(categoryStats?.top100Sales)}，中位价 ${formatCurrency(categoryStats?.medianPrice)}。`,
+    topKeyword
+      ? `再看核心词：${topKeyword.keyword} 月搜索量约 ${formatNumber(topKeyword.monthlyVolume)}，推荐 CPC ${formatCurrency(topKeyword.cpc)}。`
+      : '再看核心词：当前关键词细节样本不足。',
+    `之所以先锁 ${primary.detail.brand || primary.detail.asin}，不是因为它恰好卖得好，而是因为它和种子 ASIN 吃的是同一批更具体的词。`,
+    second
+      ? `${second.detail.brand || second.detail.asin} 也要进 watchlist，但目前更适合做补充观察，不适合作第一优先。`
+      : '当前没有足够强的第二观察位。',
+  ].join(' ');
+}
+
+function buildFindReviewBlocks(seed, primary) {
+  return [
+    {
+      eyebrow: '种子 ASIN',
+      title: seed.detail.brand || seed.detail.asin,
+      summary: '先看种子 ASIN 当前已经被用户认可什么、又卡在哪些问题上，这决定后面该盯什么竞对。',
+      positives: summarizeReviewThemes(seed.positiveReviews).map((theme) => theme.label),
+      negatives: summarizeReviewThemes(seed.negativeReviews).map((theme) => theme.label),
+      opportunities: [
+        '先确认它的优势到底来自产品本身，还是只是吃到了某一批词。',
+        '先确认高频差评会不会影响后面跟竞对学习时的判断。',
+      ],
+      evidence: buildReviewEvidence([
+        ...summarizeReviewThemes(seed.positiveReviews),
+        ...summarizeReviewThemes(seed.negativeReviews),
+      ]),
+    },
+    {
+      eyebrow: '第一竞对',
+      title: primary.detail.brand || primary.detail.asin,
+      summary: '这里不是为了找它的毛病，而是为了判断：它的优势能不能学，它的坑要不要避开。',
+      positives: summarizeReviewThemes(primary.positiveReviews).map((theme) => theme.label),
+      negatives: summarizeReviewThemes(primary.negativeReviews).map((theme) => theme.label),
+      opportunities: [
+        '优先看它哪些卖点在评论里被反复验证，这才是值得学的部分。',
+        '如果它的负评集中在某一类体验问题，那就别把这条路当成完整答案。',
+      ],
+      evidence: buildReviewEvidence([
+        ...summarizeReviewThemes(primary.positiveReviews),
+        ...summarizeReviewThemes(primary.negativeReviews),
+      ]),
+    },
+  ];
+}
+
+function buildFindActionCards(seed, primary, keywordSets, candidates, categoryStats) {
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || '核心词';
+  const second = candidates[1];
+
+  return [
+    {
+      priority: 'P0',
+      title: `先盯 ${primary.detail.brand || primary.detail.asin} 的价格、评论和核心词`,
+      desc: '不要一上来就跟整类目。先把第一竞对盯透，才能知道它到底是价格标杆、词路标杆，还是产品标杆。',
+      accentClass: 'border-t-red-500',
+    },
+    {
+      priority: 'P1',
+      title: `围绕 ${scenarioKeyword} 建立监控词表`,
+      desc: `先围绕 ${scenarioKeyword} 这类词看自然位、广告位和页面表达，别先被最大泛词带偏。`,
+      accentClass: 'border-t-orange-400',
+    },
+    {
+      priority: 'P1',
+      title: second ? `把 ${second.detail.brand || second.detail.asin} 放进第二观察位` : '补一个第二观察位',
+      desc: second
+        ? '不要只盯一支 ASIN。至少保留第二观察位，避免把个别样本误当成整类目的标准答案。'
+        : '当前还缺第二观察位，后面需要继续补候选池。',
+      accentClass: 'border-t-blue-500',
+    },
+    {
+      priority: 'P2',
+      title: categoryStats?.medianPrice ? `结合中位价 ${formatCurrency(categoryStats.medianPrice)} 看值不值得跟` : '结合价格带判断值不值得跟',
+      desc: '不是所有高销量样本都值得跟。价格带、评论门槛和词路结构一起成立，才值得长期跟。 ',
+      accentClass: 'border-t-emerald-500',
+    },
+  ];
+}
+
+function buildFindRoadmapSteps(seed, primary, candidates, keywordSets) {
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || '核心词';
+  const second = candidates[1];
+
+  return [
+    {
+      phase: 'Week 1',
+      title: `先把 ${primary.detail.brand || primary.detail.asin} 盯透`,
+      desc: '固定看价格、评论增速、核心词自然位和主图变化，先判断它到底是哪种标杆。',
+    },
+    {
+      phase: 'Week 2',
+      title: `围绕 ${scenarioKeyword} 拆页面和投放`,
+      desc: '重点看它标题前半句、主图卖点、附件组合和广告在打哪些词。',
+    },
+    {
+      phase: 'Week 3',
+      title: second ? `把 ${second.detail.brand || second.detail.asin} 拉进 watchlist` : '补第二观察位',
+      desc: second
+        ? '用第二观察位校正判断，避免把第一竞对的个别打法误当成唯一答案。'
+        : '继续补候选池，至少要再拉一支能长期跟踪的备选样本。',
+    },
+    {
+      phase: 'Week 4',
+      title: '形成长期监控清单',
+      desc: '最后沉淀成固定 watchlist、固定关键词和固定监控指标，而不是下次再从头找一遍。',
+    },
+  ];
+}
+
 function derive1688SearchName(detail, keywordSets) {
   const scenarioKeyword = keywordSets.scenario[0]?.keyword;
   const categorySeed = normalizeKeyword(detail.category || detail.subCategoryName || 'hair dryer');
@@ -1848,42 +2239,111 @@ function derive1688SearchName(detail, keywordSets) {
   return `${detail.category || detail.subCategoryName || detail.title}`.split(',')[0].toLowerCase();
 }
 
-function pickBestCompetitor(seedDetail, categoryReport) {
-  return scoreCompetitors(seedDetail, categoryReport)[0];
+function summarizeCandidateRole(candidate, index) {
+  if (index === 0 && !candidate.mismatchReason) {
+    return '主竞对';
+  }
+
+  if (candidate.mismatchReason) {
+    return '排除项';
+  }
+
+  if (candidate.sharedScenarioCount >= 4 && candidate.titleOverlap >= 8) {
+    return '次级直接竞对';
+  }
+
+  if (candidate.sharedKeywordCount >= 20) {
+    return '观察样本';
+  }
+
+  return '低优先级候选';
 }
 
-function scoreCompetitors(seedDetail, categoryReport) {
-  const seedTokens = new Set(tokenize(`${seedDetail.title || ''} ${seedDetail.category || ''}`));
-  const seedBrand = normalizeKeyword(seedDetail.brand);
-  const seedPrice = seedDetail.price || 0;
+function buildCandidateReasonLines(candidate) {
+  const reasons = [];
 
-  return categoryReport.topProducts
-    .slice(0, 20)
-    .map((item) => {
-      const asin = String(item['ASIN'] || '').trim();
-      const title = String(item['标题'] || '');
-      const brand = String(item['品牌'] || '');
-      const overlap = tokenize(title).filter((token) => seedTokens.has(token)).length;
-      const price = toNumber(item['价格']);
-      const priceDistance = seedPrice && price ? Math.abs(seedPrice - price) / seedPrice : 1;
-      const sales = toNumber(item['月销量']);
+  if (candidate.sharedScenarioTerms.length > 0) {
+    reasons.push(`共享高意图词：${candidate.sharedScenarioTerms.slice(0, 3).join(' / ')}`);
+  }
+
+  if (candidate.titleOverlap >= 8) {
+    reasons.push('标题和卖点结构接近，像同一路产品定义');
+  } else if (candidate.titleOverlap >= 5) {
+    reasons.push('标题有一定重合，但产品打法不完全一样');
+  }
+
+  if (candidate.priceGapRatio !== null && candidate.priceGapRatio <= 0.2) {
+    reasons.push('价格带很接近，更适合直接对打');
+  } else if (candidate.priceGapRatio !== null && candidate.priceGapRatio <= 0.4) {
+    reasons.push('价格带可比，但不算完全贴身');
+  }
+
+  if (candidate.detail.subCategoryRank !== null && candidate.detail.subCategoryRank <= 10) {
+    reasons.push('类目位置靠前，值得当头部打法样本');
+  }
+
+  return reasons.slice(0, 4);
+}
+
+function scoreCompetitorCandidates(seedDataset, candidateSignals) {
+  const seedKeywordSet = buildKeywordTermSet(seedDataset);
+  const seedScenarioTerms = getScenarioTermsFromSet(seedKeywordSet).slice(0, 12);
+  const seedPrice = seedDataset.detail.price || 0;
+
+  return candidateSignals
+    .map((signal) => {
+      const candidateKeywordSet = buildKeywordTermSet(signal);
+      const sharedKeywordTerms = [...seedKeywordSet].filter((keyword) => candidateKeywordSet.has(keyword));
+      const sharedScenarioTerms = seedScenarioTerms.filter((keyword) => candidateKeywordSet.has(keyword));
+      const titleOverlap = countTokenOverlap(seedDataset.detail.title, signal.detail.title);
+      const priceGapRatio =
+        seedPrice && signal.detail.price ? Math.abs(signal.detail.price - seedPrice) / seedPrice : null;
+      const mismatchReason = detectFindMismatch(seedDataset.detail.title, signal.detail.title);
+      const score =
+        titleOverlap * 2 +
+        sharedScenarioTerms.length * 3 +
+        Math.min(sharedKeywordTerms.length / 10, 4) +
+        (signal.detail.subCategoryRank !== null ? Math.max(0, 4 - signal.detail.subCategoryRank / 5) : 0) -
+        Math.min(priceGapRatio ?? 1.5, 1.5) -
+        (mismatchReason ? 5 : 0);
+
       return {
-        asin,
-        brand,
-        title,
-        score: overlap * 2 + Math.min((sales || 0) / 10000, 5) - priceDistance,
-        sales,
+        ...signal,
+        score: Number(score.toFixed(2)),
+        titleOverlap,
+        priceGapRatio,
+        sharedKeywordCount: sharedKeywordTerms.length,
+        sharedScenarioCount: sharedScenarioTerms.length,
+        sharedScenarioTerms: sharedScenarioTerms.slice(0, 6),
+        mismatchReason,
       };
     })
-    .filter((item) => item.asin && item.asin !== seedDetail.asin)
-    .filter((item) => normalizeKeyword(item.brand) !== seedBrand)
     .sort((left, right) => {
       if (right.score !== left.score) {
         return right.score - left.score;
       }
 
-      return (right.sales || 0) - (left.sales || 0);
-    });
+      return (right.detail.monthlySales || 0) - (left.detail.monthlySales || 0);
+    })
+    .map((candidate, index) => ({
+      ...candidate,
+      role: summarizeCandidateRole(candidate, index),
+      reasonLines: buildCandidateReasonLines(candidate),
+    }));
+}
+
+async function findCompetitorCandidates(seedDataset, categoryReport, site) {
+  const pool = categoryReport.topProducts
+    .slice(0, 10)
+    .filter((item) => String(item['ASIN'] || '').trim())
+    .filter((item) => String(item['ASIN']).trim() !== seedDataset.detail.asin)
+    .filter((item) => normalizeKeyword(item['品牌'] || '') !== normalizeKeyword(seedDataset.detail.brand || ''));
+
+  const candidateSignals = await Promise.all(
+    pool.map((item) => fetchCandidateSignal(String(item['ASIN']).trim(), site)),
+  );
+
+  return scoreCompetitorCandidates(seedDataset, candidateSignals);
 }
 
 function buildBaseReportMeta(mode) {
@@ -1933,38 +2393,39 @@ function buildCompareModeReport({ session, left, right, categoryReport, keywordI
 }
 
 function buildFindModeReport({ session, left, right, categoryReport, keywordIntel, extraNote, competitorCandidates }) {
-  const winnerState = chooseWinner(left, right);
   const keywordSets = chooseKeywordSets([left, right]);
   const genericKeywordPair = buildGenericKeywordPair(left, right, keywordSets);
-  const modeFocus = buildModeFocus('find', left, right, keywordSets, categoryReport, null, competitorCandidates);
+  const modeFocus = buildFindModeFocus(left, right, competitorCandidates, keywordSets);
 
   return {
     session,
     report: {
       meta: buildBaseReportMeta('find'),
-      title: buildTitle('find', winnerState.winner, winnerState.other, keywordSets),
-      summary: buildSummary('find', left, right, categoryReport.stats, extraNote),
+      title: buildFindTitle(left, right),
+      summary: buildFindSummary(left, right, categoryReport.stats, competitorCandidates, keywordIntel, extraNote),
       labels: {
         left: left.detail.brand || left.detail.asin,
         right: right.detail.brand || right.detail.asin,
       },
-      sectionCopy: buildSectionCopy('find', left, right, categoryReport.stats, keywordSets),
-      heroCards: buildHeroCards('find', winnerState.winner, winnerState.other, categoryReport.stats, keywordSets, null, extraNote),
+      sectionCopy: buildFindSectionCopy(left, right),
+      heroCards: buildFindHeroCards(left, right, competitorCandidates, keywordSets),
       navItems: buildNavItems('find'),
       modeFocusTitle: modeFocus.title,
       modeFocusCards: modeFocus.cards,
+      candidatePoolTitle: '候选池',
+      candidatePoolCards: buildFindCandidatePoolCards(competitorCandidates),
       products: [
         buildProductCard(left.detail, summarizeReviewThemes(left.positiveReviews)),
         buildProductCard(right.detail, summarizeReviewThemes(right.positiveReviews)),
       ],
-      comparisonRows: buildComparisonRows(left, right, genericKeywordPair),
+      comparisonRows: buildFindComparisonRows(left, right, competitorCandidates, genericKeywordPair),
       categoryCards: buildCategoryCards(categoryReport.stats, left, right),
       categoryRows: buildCategoryRows(left, right, categoryReport.stats),
-      trafficColumns: buildTrafficColumns('find', left, right, keywordSets),
-      trafficInsight: buildTrafficInsight('find', categoryReport.stats, keywordIntel),
-      reviewBlocks: buildReviewBlocks(left, right),
-      actionCards: buildActionCards('find', left, right, keywordSets, categoryReport.stats),
-      roadmapSteps: buildRoadmapSteps('find', left, right, keywordSets),
+      trafficColumns: buildFindTrafficColumns(left, right, competitorCandidates, keywordSets, keywordIntel),
+      trafficInsight: buildFindTrafficInsight(left, right, competitorCandidates, categoryReport.stats, keywordIntel),
+      reviewBlocks: buildFindReviewBlocks(left, right),
+      actionCards: buildFindActionCards(left, right, keywordSets, competitorCandidates, categoryReport.stats),
+      roadmapSteps: buildFindRoadmapSteps(left, right, competitorCandidates, keywordSets),
     },
   };
 }
@@ -2043,25 +2504,25 @@ export async function buildLiveReport(sessionInput) {
     ? await callSorftimeTool('category_report', { nodeId: seed.detail.nodeId, amzSite: site })
     : null;
   const categoryReport = categoryReportText ? parseCategoryReport(categoryReportText.text) : { topProducts: [], stats: {} };
-  const competitorCandidates = scoreCompetitors(seed.detail, categoryReport);
+  const competitorCandidates = await findCompetitorCandidates(seed, categoryReport, site);
   const competitor = competitorCandidates[0];
 
-  if (!competitor?.asin) {
+  if (!competitor?.detail?.asin) {
     throw new Error('没有从当前类目里找到足够可信的竞对样本，请更换 ASIN 再试。');
   }
 
-  const benchmark = await fetchProductDataset(competitor.asin, site);
+  const benchmark = await fetchProductDataset(competitor.detail.asin, site);
   const keywordSets = chooseKeywordSets([seed, benchmark]);
   const keywordIntel = await fetchKeywordIntel(site, collectKeywordSeeds(keywordSets));
 
   if (sessionInput.mode === 'find') {
     return buildFindModeReport({
-      session: { ...sessionInput, asins: [seedAsin, competitor.asin], query: `${seedAsin}, ${competitor.asin}` },
+      session: { ...sessionInput, asins: [seedAsin, competitor.detail.asin], query: `${seedAsin}, ${competitor.detail.asin}` },
       left: seed,
       right: benchmark,
       categoryReport,
       keywordIntel,
-      extraNote: `本次自动锁定的第一竞对是 ${competitor.asin}，因为它和种子 ASIN 同类目、销量靠前且标题相似度更高。`,
+      extraNote: `本次自动锁定的第一竞对是 ${competitor.detail.asin}，因为它和种子 ASIN 在价格带、标题结构和共享高意图词上都更接近。`,
       competitorCandidates,
     });
   }
@@ -2078,11 +2539,11 @@ export async function buildLiveReport(sessionInput) {
   };
 
   return buildSourceModeReport({
-    session: { ...sessionInput, asins: [seedAsin, competitor.asin], query: `${seedAsin}, ${competitor.asin}` },
-    left: seed,
-    right: benchmark,
-    categoryReport,
-    keywordIntel,
+      session: { ...sessionInput, asins: [seedAsin, competitor.detail.asin], query: `${seedAsin}, ${competitor.detail.asin}` },
+      left: seed,
+      right: benchmark,
+      categoryReport,
+      keywordIntel,
     sourcing,
     extraNote: `Amazon 侧先拿 ${competitor.asin} 做对照，1688 侧再用 “${searchName}” 拉相似供给作为落地锚点。`,
     competitorCandidates,

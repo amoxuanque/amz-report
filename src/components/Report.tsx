@@ -2,7 +2,7 @@ import { motion } from 'motion/react';
 import { ArrowLeft } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { AnalysisSession } from '../types/analysis';
-import type { CompetitiveReport, ReportComparisonRow, ReportHeroCard, ReportReviewBlock, ReportRoadmapStep } from '../types/report';
+import type { CompetitiveReport, ReportCandidateCard, ReportComparisonRow, ReportHeroCard, ReportReviewBlock, ReportRoadmapStep } from '../types/report';
 
 interface ReportProps {
   onBack: () => void;
@@ -116,6 +116,13 @@ export default function Report({ onBack, session, report }: ReportProps) {
           </motion.section>
         )}
 
+        {report.candidatePoolCards && report.candidatePoolCards.length > 0 && (
+          <motion.section variants={variants} id={report.candidatePoolTitle || '候选池'} className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+            <SectionHeader title={report.candidatePoolTitle || '候选池'} desc={report.sectionCopy.candidates || report.sectionCopy.comparison} />
+            <CandidatePoolGrid cards={report.candidatePoolCards} />
+          </motion.section>
+        )}
+
         <motion.section variants={variants} id="核心对比" className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           <SectionHeader title="核心对比" desc={report.sectionCopy.comparison} />
           <ComparisonTable rows={report.comparisonRows} leftLabel={report.labels.left} rightLabel={report.labels.right} />
@@ -214,6 +221,30 @@ function CardGrid({ cards }: { cards: ReportHeroCard[] }) {
           <div className="text-xs font-bold tracking-wider text-slate-400 uppercase mb-3">{card.label}</div>
           <div className="text-2xl font-semibold text-slate-900 mb-3">{card.value}</div>
           <p className="text-[13px] text-slate-600 leading-relaxed">{card.desc}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CandidatePoolGrid({ cards }: { cards: ReportCandidateCard[] }) {
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {cards.map((card) => (
+        <div key={`${card.eyebrow}-${card.title}`} className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+          <div className="text-xs font-bold tracking-wider text-slate-400 uppercase mb-2">{card.eyebrow}</div>
+          <h3 className="text-xl font-semibold text-slate-900 mb-3">{card.title}</h3>
+          <p className="text-sm text-slate-600 leading-relaxed mb-4">{card.summary}</p>
+          <ul className="space-y-2 text-sm text-slate-600 mb-4">
+            {card.points.map((point) => (
+              <li key={point}>{point}</li>
+            ))}
+          </ul>
+          {card.caution && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <strong className="text-amber-700">注意：</strong> {card.caution}
+            </div>
+          )}
         </div>
       ))}
     </div>

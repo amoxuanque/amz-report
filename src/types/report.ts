@@ -64,6 +64,14 @@ export interface ReportRoadmapStep {
   desc: string;
 }
 
+export interface ReportCandidateCard {
+  eyebrow: string;
+  title: string;
+  summary: string;
+  points: string[];
+  caution?: string;
+}
+
 export interface CompetitiveReport {
   meta: {
     date: string;
@@ -81,6 +89,7 @@ export interface CompetitiveReport {
     products: string;
     comparison: string;
     modeFocus?: string;
+    candidates?: string;
     category: string;
     traffic: string;
     reviews: string;
@@ -91,6 +100,8 @@ export interface CompetitiveReport {
   navItems: ReportNavItem[];
   modeFocusTitle?: string;
   modeFocusCards?: ReportHeroCard[];
+  candidatePoolTitle?: string;
+  candidatePoolCards?: ReportCandidateCard[];
   products: ReportProduct[];
   comparisonRows: ReportComparisonRow[];
   categoryCards: ReportHeroCard[];
