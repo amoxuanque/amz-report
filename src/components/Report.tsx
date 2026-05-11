@@ -265,6 +265,9 @@ function ReviewBlockView({ block }: { block: ReportReviewBlock }) {
       <div className="space-y-4">
         <ReviewList title="正向驱动" items={block.positives} accent="text-green-600" />
         <ReviewList title="负向风险" items={block.negatives} accent="text-red-600" />
+        {block.evidence && block.evidence.length > 0 && (
+          <ReviewList title="证据样本" items={block.evidence} accent="text-amber-600" />
+        )}
         <ReviewList title="可转动作" items={block.opportunities} accent="text-blue-600" />
       </div>
     </div>

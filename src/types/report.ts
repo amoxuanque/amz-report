@@ -55,6 +55,7 @@ export interface ReportReviewBlock {
   positives: string[];
   negatives: string[];
   opportunities: string[];
+  evidence?: string[];
 }
 
 export interface ReportRoadmapStep {

@@ -183,10 +183,65 @@ function parseTrend(text) {
     .filter(Boolean);
 }
 
+function averageOf(items, accessor) {
+  const values = items
+    .map(accessor)
+    .filter((value) => value !== null && value !== undefined && !Number.isNaN(value));
+
+  if (values.length === 0) {
+    return null;
+  }
+
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function daysSinceDate(dateString) {
+  if (!dateString) {
+    return null;
+  }
+
+  const parsed = new Date(dateString);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return Math.floor((Date.now() - parsed.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+function deriveCategoryBenchmarks(topProducts) {
+  const normalized = Array.isArray(topProducts)
+    ? topProducts.map((item) => ({
+        sales: toNumber(item['月销量']),
+        revenue: toNumber(item['月销额']),
+        price: toNumber(item['价格']),
+        rating: toNumber(item['星级']),
+        reviews: toNumber(item['评论数']),
+        listedAt: item['上架日期'] || null,
+      }))
+    : [];
+
+  const top10 = normalized.slice(0, 10);
+  const newProducts = normalized.filter((item) => {
+    const daysLive = daysSinceDate(item.listedAt);
+    return daysLive !== null && daysLive <= 365;
+  });
+
+  return {
+    top10AverageSales: averageOf(top10, (item) => item.sales),
+    top10AverageRevenue: averageOf(top10, (item) => item.revenue),
+    top10AverageRating: averageOf(top10, (item) => item.rating),
+    top10AverageReviews: averageOf(top10, (item) => item.reviews),
+    newProductShare: normalized.length > 0 ? (newProducts.length / normalized.length) * 100 : null,
+    newProductAverageSales: averageOf(newProducts, (item) => item.sales),
+    newProductAveragePrice: averageOf(newProducts, (item) => item.price),
+  };
+}
+
 function parseCategoryReport(text) {
   const payload = safeJsonParse(text, {});
   const stats = payload['类目统计报告'] || {};
   const topProducts = payload['Top100产品'] || [];
+  const benchmarks = deriveCategoryBenchmarks(topProducts);
 
   return {
     topProducts,
@@ -204,6 +259,7 @@ function parseCategoryReport(text) {
       highReviewsShare: extractNumberAfterColon(stats['high_reviews_sales_volume_share']),
       lowReviewsShare: extractNumberAfterColon(stats['low_reviews_sales_volume_share']),
       firstBrand: stats['first_brand']?.replace('销量最大品牌:', '') || null,
+      ...benchmarks,
     },
   };
 }
@@ -265,6 +321,29 @@ function parseReviewList(text) {
     : [];
 }
 
+function parseKeywordSearchResultStats(text) {
+  if (!text) {
+    return null;
+  }
+
+  const nonBestSeller = text.match(/自然位非Best Seller Top100产品数量占比([\d.]+)%/);
+  const naturalLowReview = text.match(/自然位评价数低于100\/300\/500的产品数量占比分别为([\d.]+)%\/([\d.]+)%\/([\d.]+)%/);
+  const adLowReview = text.match(/广告位评价数低于100\/300\/500的产品数量占比分别为([\d.]+)%\/([\d.]+)%\/([\d.]+)%/);
+  const coupon = text.match(/做coupon促销产品数量\/占比分别为(\d+)个\s*\/([\d.]+)%/);
+
+  return {
+    nonBestSellerShare: parsePercent(nonBestSeller?.[1]),
+    naturalLowReview100: parsePercent(naturalLowReview?.[1]),
+    naturalLowReview300: parsePercent(naturalLowReview?.[2]),
+    naturalLowReview500: parsePercent(naturalLowReview?.[3]),
+    adLowReview100: parsePercent(adLowReview?.[1]),
+    adLowReview300: parsePercent(adLowReview?.[2]),
+    adLowReview500: parsePercent(adLowReview?.[3]),
+    couponCount: toNumber(coupon?.[1]),
+    couponShare: parsePercent(coupon?.[2]),
+  };
+}
+
 function parseKeywordDetail(text) {
   const item = safeJsonParse(text, {});
   return {
@@ -273,6 +352,7 @@ function parseKeywordDetail(text) {
     cpc: toNumber(item['推荐cpc竞价']),
     peakMonth: item['词搜索量旺季'] || null,
     resultCount: toNumber(item['搜索结果竞品数量']),
+    pageOneStats: parseKeywordSearchResultStats(item['搜索结果首页统计']),
   };
 }
 
@@ -471,6 +551,7 @@ function summarizeReviewThemes(reviews) {
       label: theme.label,
       count,
       sampleTitle: sample?.title || '',
+      sampleDate: sample?.date || '',
     };
   })
     .filter((item) => item.count > 0)
@@ -491,6 +572,138 @@ function buildProductDescription(detail, positiveThemes) {
   }
 
   return `${detail.category || detail.subCategoryName || '该产品'}当前已拿到稳定市场反馈，可继续从价格、内容和差评点拆解。`;
+}
+
+function formatSignedPercent(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return '未知';
+  }
+
+  const prefix = value > 0 ? '+' : '';
+  return `${prefix}${Number(value).toFixed(1)}%`;
+}
+
+function summarizeTrendSignal(trend) {
+  if (!Array.isArray(trend) || trend.length < 2) {
+    return null;
+  }
+
+  const values = trend.map((item) => item.value).filter((value) => value !== null && value !== undefined);
+  if (values.length < 2) {
+    return null;
+  }
+
+  const first = values[0];
+  const last = values[values.length - 1];
+  const peak = Math.max(...values);
+  const trough = Math.min(...values);
+  const delta = first ? ((last - first) / first) * 100 : null;
+
+  return {
+    first,
+    last,
+    peak,
+    trough,
+    delta,
+  };
+}
+
+function describeKeywordAccessibility(detail) {
+  const stats = detail?.pageOneStats;
+  if (!stats) {
+    return '首页门槛样本不足';
+  }
+
+  const lowReviewShare = stats.naturalLowReview100;
+  const nonBestSellerShare = stats.nonBestSellerShare;
+  if (
+    lowReviewShare !== null &&
+    lowReviewShare !== undefined &&
+    nonBestSellerShare !== null &&
+    nonBestSellerShare !== undefined
+  ) {
+    if (lowReviewShare <= 20 && nonBestSellerShare <= 20) {
+      return '首页自然位门槛高，新品不容易裸冲';
+    }
+
+    if (lowReviewShare >= 30 || nonBestSellerShare >= 25) {
+      return '首页仍有非头部进入窗口';
+    }
+  }
+
+  return '首页进入难度中等，更适合场景词切入';
+}
+
+function summarizeTrafficStructure(dataset) {
+  const organicPageOneKeywords = new Set();
+  const adOnlyKeywords = new Set();
+  const dualExposureKeywords = new Set();
+
+  dataset.trafficTerms.forEach((item) => {
+    if (item.organicRank?.page === 1) {
+      organicPageOneKeywords.add(normalizeKeyword(item.keyword));
+    }
+    if (item.adRank && !item.organicRank) {
+      adOnlyKeywords.add(normalizeKeyword(item.keyword));
+    }
+    if (item.adRank && item.organicRank) {
+      dualExposureKeywords.add(normalizeKeyword(item.keyword));
+    }
+  });
+
+  dataset.competitorKeywords.forEach((item) => {
+    if (item.rank?.page === 1) {
+      organicPageOneKeywords.add(normalizeKeyword(item.keyword));
+    }
+  });
+
+  return {
+    organicPageOneCount: [...organicPageOneKeywords].filter(Boolean).length,
+    adOnlyCount: [...adOnlyKeywords].filter(Boolean).length,
+    dualExposureCount: [...dualExposureKeywords].filter(Boolean).length,
+  };
+}
+
+function extractClaimHighlights(detail) {
+  const attributeHighlights = Object.entries(detail.attributes || {})
+    .slice(0, 2)
+    .map(([label, value]) => `${label}:${value}`);
+  const featureHighlights = Object.entries(detail.features || {})
+    .sort((left, right) => toNumber(right[1]) - toNumber(left[1]))
+    .slice(0, 2)
+    .map(([label, value]) => `${label} ${value}`);
+
+  return [...attributeHighlights, ...featureHighlights].filter(Boolean).slice(0, 3);
+}
+
+function collectKeywordExpansionPoints(keywordIntel, brands) {
+  const seen = new Set();
+  const brandTokens = brands.flatMap((brand) => tokenize(brand));
+  const seedKeywords = new Set(keywordIntel.map((item) => normalizeKeyword(item.keyword)));
+
+  return keywordIntel
+    .flatMap((item) => item.extends || [])
+    .filter((entry) => entry.keyword && entry.monthlyVolume)
+    .filter((entry) => !seedKeywords.has(normalizeKeyword(entry.keyword)))
+    .filter((entry) => !brandTokens.some((token) => token && normalizeKeyword(entry.keyword).includes(token)))
+    .sort((left, right) => (right.monthlyVolume || 0) - (left.monthlyVolume || 0))
+    .filter((entry) => {
+      const key = normalizeKeyword(entry.keyword);
+      if (!key || seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 4)
+    .map((entry) => `${entry.keyword}: 月搜 ${formatNumber(entry.monthlyVolume)} / CPC ${formatCurrency(entry.cpc)} / ${entry.seasonality || '季节性未知'}`);
+}
+
+function buildReviewEvidence(themes) {
+  return themes
+    .filter((theme) => theme.sampleTitle)
+    .slice(0, 2)
+    .map((theme) => `${theme.label}: ${theme.sampleTitle}${theme.sampleDate ? ` (${theme.sampleDate})` : ''}`);
 }
 
 function formatRank(detail) {
@@ -642,13 +855,19 @@ function buildComparisonRows(left, right, genericKeywordPair) {
 function buildCategoryCards(categoryStats, left, right) {
   const medianPrice = categoryStats?.medianPrice;
   const averagePrice = categoryStats?.averagePrice;
-  const topBrand = categoryStats?.firstBrand || right.detail.brand || left.detail.brand || '未知';
 
   return [
     {
       label: 'Top100 月销量',
       value: formatNumber(categoryStats?.top100Sales),
       desc: `${categoryStats?.name || '当前类目'} 当前容量足够大，但不是低门槛市场。`,
+    },
+    {
+      label: 'Top10 头部线',
+      value: categoryStats?.top10AverageSales ? `${formatNumber(Math.round(categoryStats.top10AverageSales))} /月` : '未知',
+      desc: categoryStats?.top10AverageRevenue
+        ? `Top10 平均月销额约 ${formatCurrency(Math.round(categoryStats.top10AverageRevenue))}，这更接近真正头部款的成交线。`
+        : '当前还缺少完整头部样本。',
     },
     {
       label: '价格带',
@@ -659,14 +878,22 @@ function buildCategoryCards(categoryStats, left, right) {
           : '当前价格带样本有限，先用已有类目统计做判断。',
     },
     {
-      label: '头部集中度',
-      value: formatPercent(categoryStats?.top3ProductShare),
-      desc: `Top3 产品销量占比 ${formatPercent(categoryStats?.top3ProductShare)}，说明头部是否已经吃掉大部分需求。`,
+      label: '评论门槛',
+      value: formatPercent(categoryStats?.highReviewsShare),
+      desc: `评价数 1000+ 的产品拿走了 ${formatPercent(categoryStats?.highReviewsShare)} 的销量，新品评论薄会很吃亏。`,
     },
     {
-      label: '最大品牌',
-      value: topBrand,
-      desc: '头部品牌样本能帮助判断这个类目更偏品牌驱动还是结构驱动。',
+      label: '新品窗口',
+      value: categoryStats?.newProductShare !== null && categoryStats?.newProductShare !== undefined ? formatPercent(categoryStats.newProductShare) : '未知',
+      desc:
+        categoryStats?.newProductAverageSales
+          ? `近 1 年新品平均月销约 ${formatNumber(Math.round(categoryStats.newProductAverageSales))}，不是纯蓝海，但仍有结构化切入空间。`
+          : '当前新品样本不足，先保守看待切入难度。',
+    },
+    {
+      label: '头部集中度',
+      value: formatPercent(categoryStats?.top3ProductShare),
+      desc: `Top3 产品销量占比 ${formatPercent(categoryStats?.top3ProductShare)}，Top3 品牌占比 ${formatPercent(categoryStats?.top3BrandShare)}。`,
     },
   ];
 }
@@ -697,6 +924,30 @@ function buildCategoryRows(left, right, categoryStats) {
       val2: `${formatNumber(right.detail.reviewCount)} / ${right.detail.rating?.toFixed(1) || '未知'}`,
       desc: `类目高评论销量占比 ${formatPercent(categoryStats?.highReviewsShare)}，评论量薄的一侧更容易在转化上吃亏。`,
       highlight: compareByBetter(left, right, (dataset) => dataset.detail.reviewCount),
+    },
+    {
+      title: '头部销量线',
+      val1: categoryStats?.top10AverageSales ? `${formatNumber(left.detail.monthlySales)} vs ${formatNumber(categoryStats.top10AverageSales)}` : formatNumber(left.detail.monthlySales),
+      val2: categoryStats?.top10AverageSales ? `${formatNumber(right.detail.monthlySales)} vs ${formatNumber(categoryStats.top10AverageSales)}` : formatNumber(right.detail.monthlySales),
+      desc: categoryStats?.top10AverageSales
+        ? `Top10 平均月销约 ${formatNumber(categoryStats.top10AverageSales)}。离这条线更近的一侧，更接近成熟头部款。`
+        : '当前缺少足够头部样本，先用月销绝对值判断。',
+      highlight:
+        left.detail.monthlySales !== null && right.detail.monthlySales !== null
+          ? compareByBetter(left, right, (dataset) => dataset.detail.monthlySales)
+          : undefined,
+    },
+    {
+      title: '新品进入窗口',
+      val1: left.detail.listedAt || '未知',
+      val2: right.detail.listedAt || '未知',
+      desc: categoryStats?.newProductShare !== null && categoryStats?.newProductShare !== undefined
+        ? `近 1 年新品占比约 ${formatPercent(categoryStats.newProductShare)}，新品平均月销约 ${formatNumber(categoryStats.newProductAverageSales)}。`
+        : '当前新品样本不足，难以判断“新上架就能起量”的概率。',
+      highlight:
+        left.detail.daysLive !== null && right.detail.daysLive !== null
+          ? compareByBetter(left, right, (dataset) => dataset.detail.daysLive, true)
+          : undefined,
     },
     {
       title: '头部品牌 / 卖家集中',
@@ -1212,6 +1463,10 @@ function buildCompareCommercialSnapshot(left, right, categoryStats, keywordSets)
       ? toFixedNumber(Math.abs(left.detail.price - right.detail.price), 2)
       : null;
   const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || null;
+  const leftTrend = summarizeTrendSignal(left.trend);
+  const rightTrend = summarizeTrendSignal(right.trend);
+  const leftTraffic = summarizeTrafficStructure(left);
+  const rightTraffic = summarizeTrafficStructure(right);
 
   return {
     salesRatio,
@@ -1220,6 +1475,10 @@ function buildCompareCommercialSnapshot(left, right, categoryStats, keywordSets)
     medianPrice,
     priceGap,
     scenarioKeyword,
+    leftTrend,
+    rightTrend,
+    leftTraffic,
+    rightTraffic,
   };
 }
 
@@ -1236,20 +1495,29 @@ function buildCompareTitle(left, right, keywordSets) {
   return `${winner.detail.brand || winner.detail.asin} 是当前成交基准，${other.detail.brand || other.detail.asin} 是更适合拆打法的挑战者。`;
 }
 
-function buildCompareSummary(left, right, categoryStats, keywordSets) {
+function buildCompareSummary(left, right, categoryStats, keywordSets, keywordIntel) {
   const winnerState = chooseWinner(left, right);
   const winner = winnerState.winner;
   const other = winnerState.other;
   const snapshot = buildCompareCommercialSnapshot(left, right, categoryStats, keywordSets);
   const genericKeyword = keywordSets.generic[0]?.keyword || '核心泛词';
   const scenarioKeyword = snapshot.scenarioKeyword;
+  const topKeyword = keywordIntel[0]?.detail;
   const factLine = `事实：${left.detail.brand || left.detail.asin} 当前月销约 ${formatNumber(left.detail.monthlySales)}、月销额 ${formatCurrency(left.detail.monthlyRevenue)}；${right.detail.brand || right.detail.asin} 当前月销约 ${formatNumber(right.detail.monthlySales)}、月销额 ${formatCurrency(right.detail.monthlyRevenue)}。`;
   const categoryLine = categoryStats?.name
-    ? `类目事实：两者同处 ${categoryStats.name}，Top100 月销量约 ${formatNumber(categoryStats.top100Sales)}，中位价 ${formatCurrency(categoryStats.medianPrice)}，Top3 产品销量占比 ${formatPercent(categoryStats.top3ProductShare)}。`
+    ? `类目事实：两者同处 ${categoryStats.name}，Top100 月销量约 ${formatNumber(categoryStats.top100Sales)}，中位价 ${formatCurrency(categoryStats.medianPrice)}，Top10 平均月销约 ${formatNumber(Math.round(categoryStats.top10AverageSales || 0))}，高评论销量占比 ${formatPercent(categoryStats.highReviewsShare)}。`
     : '类目事实：当前类目统计样本不足。';
-  const verdictLine = `判断：${winner.detail.brand || winner.detail.asin} 更像当前基准盘，因为它在成交规模、评论护城河或自然位上更完整；${other.detail.brand || other.detail.asin} 更值得拆的部分，不是绝对低价，而是 ${scenarioKeyword ? `${scenarioKeyword}` : genericKeyword} 这一侧的词路和内容打法。`;
+  const trendLine =
+    snapshot.leftTrend?.delta !== null && snapshot.rightTrend?.delta !== null
+      ? `趋势事实：${left.detail.brand || left.detail.asin} 近12期约 ${formatSignedPercent(snapshot.leftTrend.delta)}，${right.detail.brand || right.detail.asin} 近12期约 ${formatSignedPercent(snapshot.rightTrend.delta)}。`
+      : '趋势事实：当前趋势样本不足。';
+  const barrierLine = topKeyword?.pageOneStats
+    ? `词路事实：${topKeyword.keyword} 首页自然位里，非 Best Seller 占比约 ${formatPercent(topKeyword.pageOneStats.nonBestSellerShare)}，评论低于 100 的占比约 ${formatPercent(topKeyword.pageOneStats.naturalLowReview100)}，说明最大泛词并不轻松。`
+    : '词路事实：当前关键词首页门槛样本不足。';
+  const verdictLine = `判断：${winner.detail.brand || winner.detail.asin} 更像当前基准盘，因为它在成交规模、评论护城河、自然位或趋势稳定性上更完整；${other.detail.brand || other.detail.asin} 更值得拆的部分，不是绝对低价，而是 ${scenarioKeyword ? `${scenarioKeyword}` : genericKeyword} 这一侧的词路和内容打法。`;
+  const actionLine = `执行焦点：不要继续把预算砸在 ${genericKeyword} 这种最大泛词上，先把 ${other.detail.brand || other.detail.asin} 的页面承诺、评论风险和 ${scenarioKeyword || genericKeyword} 词路打通，再决定要不要扩量。`;
 
-  return [factLine, categoryLine, verdictLine].join(' ');
+  return [factLine, categoryLine, barrierLine, trendLine, verdictLine, actionLine].join(' ');
 }
 
 function buildCompareHeroCards(left, right, categoryStats, keywordSets) {
@@ -1258,19 +1526,21 @@ function buildCompareHeroCards(left, right, categoryStats, keywordSets) {
   const other = winnerState.other;
   const snapshot = buildCompareCommercialSnapshot(left, right, categoryStats, keywordSets);
   const scenarioKeyword = snapshot.scenarioKeyword;
+  const otherTrend = other === left ? snapshot.leftTrend : snapshot.rightTrend;
+  const otherTraffic = other === left ? snapshot.leftTraffic : snapshot.rightTraffic;
 
   return [
     {
       label: 'Current Winner',
       value: winner.detail.brand || winner.detail.asin,
-      desc: `当前月销 ${formatNumber(winner.detail.monthlySales)}、评论 ${formatNumber(winner.detail.reviewCount)}、细分类目排名 ${formatRank(winner.detail)}，更像现阶段市场基准。`,
+      desc: `${winner.detail.brand || winner.detail.asin} 现在更像头部基准，因为它同时拿住了月销 ${formatNumber(winner.detail.monthlySales)}、评论 ${formatNumber(winner.detail.reviewCount)} 和 P1 自然位。`,
     },
     {
       label: 'Challenger Signal',
       value: other.detail.brand || other.detail.asin,
       desc:
         scenarioKeyword
-          ? `${other.detail.brand || other.detail.asin} 不一定赢在总盘子，但在 ${scenarioKeyword} 这类高意图词和页面承诺上仍有可拆空间。`
+          ? `${other.detail.brand || other.detail.asin} 不一定赢在总盘子，但 ${otherTrend?.delta !== null ? `近 12 期约 ${formatSignedPercent(otherTrend.delta)}，` : ''}在 ${scenarioKeyword} 这类高意图词上仍有进攻窗口。`
           : `${other.detail.brand || other.detail.asin} 更适合拿来拆词路、内容结构和进攻窗口。`,
     },
     {
@@ -1278,7 +1548,9 @@ function buildCompareHeroCards(left, right, categoryStats, keywordSets) {
       value: scenarioKeyword || (categoryStats?.medianPrice ? `中位价 ${formatCurrency(categoryStats.medianPrice)}` : '先拆高意图词'),
       desc:
         scenarioKeyword
-          ? `先围绕 ${scenarioKeyword} 重写标题、主图和广告结构，再决定是否继续卷泛词。`
+          ? otherTraffic.adOnlyCount > 0
+            ? `先围绕 ${scenarioKeyword} 修页面承诺和广告结构；当前广告独占词还有 ${otherTraffic.adOnlyCount} 个，说明别急着继续放量。`
+            : `先围绕 ${scenarioKeyword} 修页面承诺和广告结构；当前更该补自然词覆盖和转化证明，而不是继续加预算。`
           : `先看价格带、评论门槛和高频差评，再决定真正的切入路径。`,
     },
   ];
@@ -1286,20 +1558,23 @@ function buildCompareHeroCards(left, right, categoryStats, keywordSets) {
 
 function buildCompareSectionCopy(left, right, categoryStats, keywordSets) {
   const snapshot = buildCompareCommercialSnapshot(left, right, categoryStats, keywordSets);
+  const winnerState = chooseWinner(left, right);
+  const winner = winnerState.winner;
+  const other = winnerState.other;
   const leftLabel = left.detail.brand || left.detail.asin;
   const rightLabel = right.detail.brand || right.detail.asin;
 
   return {
-    products: `先把 ${leftLabel} 和 ${rightLabel} 当成两种不同打法来看：一个代表当前成交基准，一个代表可拆的挑战路径。`,
-    comparison: `不是简单比参数，而是比谁更稳住了销量、评论护城河、自然位和利润空间。当前销量比约 ${snapshot.salesRatio ? `${snapshot.salesRatio}x` : '未知'}，评论护城河差约 ${snapshot.reviewRatio ? `${snapshot.reviewRatio}x` : '未知'}。`,
-    modeFocus: '这里不直接下“谁更好”的空结论，而是先回答：谁定义市场、谁提供攻击窗口、真正的约束条件是什么。',
-    category: `这个类目不能只看大盘子。进入难度实际由中位价 ${snapshot.medianPrice ? formatCurrency(snapshot.medianPrice) : '未知'}、头部集中度和高评论销量占比共同决定。`,
+    products: `两款 ASIN 位于同一细分类目，但打法不同：${winner.detail.brand || winner.detail.asin} 更像成熟基准盘，${other.detail.brand || other.detail.asin} 更像仍在寻找最优切口的挑战者。`,
+    comparison: `以下对比不是回答“谁更好”，而是回答：${other.detail.brand || other.detail.asin} 继续往上做，应该学 ${winner.detail.brand || winner.detail.asin} 的什么，不该复制它的什么。当前销量比约 ${snapshot.salesRatio ? `${snapshot.salesRatio}x` : '未知'}，评论护城河差约 ${snapshot.reviewRatio ? `${snapshot.reviewRatio}x` : '未知'}。`,
+    modeFocus: '这里先定角色，再定打法：谁定义市场，谁提供进攻窗口，真正的进入限制是什么。',
+    category: `这个类目盘子够大，但不是轻松蓝海。进入难度实际由中位价 ${snapshot.medianPrice ? formatCurrency(snapshot.medianPrice) : '未知'}、Top10 头部线、高评论销量占比，以及 Amazon 自营和品牌集中度共同决定。`,
     traffic: snapshot.scenarioKeyword
-      ? `核心问题不是谁能蹭到泛词，而是谁能把 ${snapshot.scenarioKeyword} 这种高意图词转成更高质量成交。`
-      : '核心问题不是谁能蹭到泛词，而是谁能把高意图词稳定转成成交。',
-    reviews: '评论区要拆成两件事：一是哪些点在支撑转化，二是哪些点会在放量时变成结构性风险。',
-    actions: '建议必须落到标题、主图、广告结构、产品修正和价格策略，不能停留在“优化一下 listing”。',
-    roadmap: '把当前判断转成 4 周动作，才算真的从“报告”进入“执行”。',
+      ? `流量结构已经很清楚：${winner.detail.brand || winner.detail.asin} 更像泛词守盘方，${other.detail.brand || other.detail.asin} 更适合从 ${snapshot.scenarioKeyword} 这种高意图词切开，但前提是别让广告依赖继续放大。`
+      : '流量结构已经很清楚：真正值得抢的不是最大泛词，而是更高意图、更可转化的词路。',
+    reviews: `评论区要拆成两件事：哪些点在支撑成交，哪些点会让 ${other.detail.brand || other.detail.asin} 一放量就把差评和退货一起放大。`,
+    actions: `以下建议默认以 ${other.detail.brand || other.detail.asin} 为执行对象，目标不是复制 ${winner.detail.brand || winner.detail.asin}，而是把它做成更稳的差异化打法。`,
+    roadmap: `${other.detail.brand || other.detail.asin} 下一阶段的顺序应该是：先修转化基础，再稳住细分词，最后才考虑扩量。`,
   };
 }
 
@@ -1309,18 +1584,35 @@ function buildCompareTrafficInsight(left, right, categoryStats, keywordIntel, ke
   const winner = winnerState.winner;
   const other = winnerState.other;
   const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || '高意图词';
+  const trafficLeft = summarizeTrafficStructure(left);
+  const trafficRight = summarizeTrafficStructure(right);
+  const expansion = collectKeywordExpansionPoints(keywordIntel, [left.detail.brand || '', right.detail.brand || ''])[0];
+  const barrierText = topKeyword?.pageOneStats
+    ? `${topKeyword.keyword} 首页非 Best Seller 占比约 ${formatPercent(topKeyword.pageOneStats.nonBestSellerShare)}，自然位评论低于 100 的占比约 ${formatPercent(topKeyword.pageOneStats.naturalLowReview100)}，coupon 渗透约 ${formatPercent(topKeyword.pageOneStats.couponShare)}。`
+    : '当前还没有足够稳定的首页进入门槛样本。';
 
   return [
     `事实：${categoryStats?.name || '当前类目'} Top100 月销量约 ${formatNumber(categoryStats?.top100Sales)}，中位价 ${formatCurrency(categoryStats?.medianPrice)}。`,
     topKeyword
-      ? `词路事实：${topKeyword.keyword} 月搜索量 ${formatNumber(topKeyword.monthlyVolume)}，推荐 CPC ${formatCurrency(topKeyword.cpc)}，旺季在 ${topKeyword.peakMonth || '未知'}。`
+      ? `词路事实：${topKeyword.keyword} 月搜索量 ${formatNumber(topKeyword.monthlyVolume)}，推荐 CPC ${formatCurrency(topKeyword.cpc)}，搜索结果约 ${formatNumber(topKeyword.resultCount)}，旺季在 ${topKeyword.peakMonth || '未知'}。`
       : '词路事实：当前关键词细节样本不足。',
-    `判断：${winner.detail.brand || winner.detail.asin} 更像泛词守盘方，${other.detail.brand || other.detail.asin} 更值得从 ${scenarioKeyword} 这种高意图词切开，而不是硬拼最大泛词。`,
+    barrierText,
+    expansion
+      ? `扩展事实：下一批高价值长尾里，${expansion}。`
+      : '扩展事实：当前长尾扩展样本不足。',
+    `判断：${winner.detail.brand || winner.detail.asin} 更像泛词守盘方，${other.detail.brand || other.detail.asin} 更值得从 ${scenarioKeyword} 这种高意图词切开，而不是硬拼最大泛词。当前 P1 自然词覆盖 ${left.detail.brand || left.detail.asin}/${right.detail.brand || right.detail.asin} 分别约 ${trafficLeft.organicPageOneCount}/${trafficRight.organicPageOneCount} 个。`,
   ].join(' ');
 }
 
-function buildCompareComparisonRows(left, right, genericKeywordPair) {
+function buildCompareComparisonRows(left, right, genericKeywordPair, keywordIntel) {
   const baseRows = buildComparisonRows(left, right, genericKeywordPair);
+  const leftTrend = summarizeTrendSignal(left.trend);
+  const rightTrend = summarizeTrendSignal(right.trend);
+  const leftTraffic = summarizeTrafficStructure(left);
+  const rightTraffic = summarizeTrafficStructure(right);
+  const leftClaims = extractClaimHighlights(left.detail);
+  const rightClaims = extractClaimHighlights(right.detail);
+  const topKeyword = keywordIntel[0]?.detail;
 
   return [
     {
@@ -1349,10 +1641,48 @@ function buildCompareComparisonRows(left, right, genericKeywordPair) {
       val2: `${right.detail.packageSizeCm || '未知'} / ${right.detail.weightG ? `${right.detail.weightG}g` : '未知'}`,
       desc: '包装尺寸和重量会直接影响 FBA、运输和利润空间，不能只看售价判断商业性。',
     },
+    {
+      title: '近12期销量趋势',
+      val1: leftTrend ? `${formatNumber(leftTrend.first)} -> ${formatNumber(leftTrend.last)} (${formatSignedPercent(leftTrend.delta)})` : '样本不足',
+      val2: rightTrend ? `${formatNumber(rightTrend.first)} -> ${formatNumber(rightTrend.last)} (${formatSignedPercent(rightTrend.delta)})` : '样本不足',
+      desc: '销量趋势帮助判断当前是稳盘、回落还是二次爬坡，避免只看单月销量下判断。',
+      highlight:
+        leftTrend?.delta !== null && rightTrend?.delta !== null
+          ? compareByBetter({ detail: { delta: leftTrend.delta } }, { detail: { delta: rightTrend.delta } }, (dataset) => dataset.detail.delta)
+          : undefined,
+    },
+    {
+      title: '自然覆盖 / 广告依赖',
+      val1: `P1 自然词 ${leftTraffic.organicPageOneCount} / 广告独占 ${leftTraffic.adOnlyCount}`,
+      val2: `P1 自然词 ${rightTraffic.organicPageOneCount} / 广告独占 ${rightTraffic.adOnlyCount}`,
+      desc: '自然词更多的一侧更稳，广告独占词过多的一侧更可能依赖持续投放维持量级。',
+      highlight:
+        leftTraffic.organicPageOneCount !== rightTraffic.organicPageOneCount
+          ? leftTraffic.organicPageOneCount > rightTraffic.organicPageOneCount ? 'left' : 'right'
+          : undefined,
+    },
+    {
+      title: '核心词首页门槛',
+      val1: `${formatNumber(left.detail.reviewCount)} 评 / ${describeKeywordAccessibility(topKeyword)}`,
+      val2: `${formatNumber(right.detail.reviewCount)} 评 / ${describeKeywordAccessibility(topKeyword)}`,
+      desc: topKeyword?.pageOneStats
+        ? `以 ${topKeyword.keyword} 为例，首页自然位里评论 <100 的占比约 ${formatPercent(topKeyword.pageOneStats.naturalLowReview100)}，非 Best Seller 占比约 ${formatPercent(topKeyword.pageOneStats.nonBestSellerShare)}。`
+        : '当前还没有足够稳定的关键词首页门槛样本。',
+      highlight: compareByBetter(left, right, (dataset) => dataset.detail.reviewCount),
+    },
+    {
+      title: '卖点与属性承诺',
+      val1: leftClaims.join(' / ') || '样本不足',
+      val2: rightClaims.join(' / ') || '样本不足',
+      desc: '这行不是看谁词更多，而是看谁的产品承诺更清晰、更容易在图文和评论里被验证。',
+    },
   ];
 }
 
 function buildCompareTrafficColumns(left, right, keywordSets, keywordIntel) {
+  const trafficLeft = summarizeTrafficStructure(left);
+  const trafficRight = summarizeTrafficStructure(right);
+  const expansionPoints = collectKeywordExpansionPoints(keywordIntel, [left.detail.brand || '', right.detail.brand || '']);
   const genericTerms = keywordSets.generic.slice(0, 3).map((item) => {
     const leftTerm = findKeywordForDataset(left, item.keyword);
     const rightTerm = findKeywordForDataset(right, item.keyword);
@@ -1367,7 +1697,7 @@ function buildCompareTrafficColumns(left, right, keywordSets, keywordIntel) {
 
   const detailPoints = keywordIntel.slice(0, 3).map((item) => {
     const detail = item.detail;
-    return `${detail.keyword || item.keyword}: 月搜 ${formatNumber(detail.monthlyVolume)} / CPC ${formatCurrency(detail.cpc)} / 旺季 ${detail.peakMonth || '未知'}`;
+    return `${detail.keyword || item.keyword}: 月搜 ${formatNumber(detail.monthlyVolume)} / CPC ${formatCurrency(detail.cpc)} / 结果数 ${formatNumber(detail.resultCount)} / ${describeKeywordAccessibility(detail)}`;
   });
 
   return [
@@ -1387,66 +1717,99 @@ function buildCompareTrafficColumns(left, right, keywordSets, keywordIntel) {
       title: detailPoints.length ? '哪些词值得进广告结构' : '关键词细节样本不足',
       points: detailPoints.length ? detailPoints : ['当前还没有足够稳定的关键词细节样本。'],
     },
+    {
+      eyebrow: '扩展词与依赖度',
+      title: expansionPoints.length ? '下一批该进测试池的长尾词' : '先看自然盘和广告盘结构',
+      points: expansionPoints.length
+        ? [
+            ...expansionPoints.slice(0, 2),
+            `${left.detail.brand}: P1 自然词 ${trafficLeft.organicPageOneCount} / 广告独占 ${trafficLeft.adOnlyCount}`,
+            `${right.detail.brand}: P1 自然词 ${trafficRight.organicPageOneCount} / 广告独占 ${trafficRight.adOnlyCount}`,
+          ]
+        : [
+            `${left.detail.brand}: P1 自然词 ${trafficLeft.organicPageOneCount} / 广告独占 ${trafficLeft.adOnlyCount}`,
+            `${right.detail.brand}: P1 自然词 ${trafficRight.organicPageOneCount} / 广告独占 ${trafficRight.adOnlyCount}`,
+          ],
+    },
   ];
 }
 
 function buildCompareReviewBlocks(left, right) {
-  return buildReviewBlocks(left, right).map((block) => ({
-    ...block,
-    opportunities: block.negatives[0] && block.positives[0]
-      ? [
-          `先修 ${block.negatives[0]}，否则放量只会放大差评。`,
-          `把 ${block.positives[0]} 变成主图或副图里可被验证的承诺。`,
-          ...block.opportunities,
-        ].slice(0, 3)
-      : block.opportunities,
-  }));
+  const leftPositive = summarizeReviewThemes(left.positiveReviews);
+  const leftNegative = summarizeReviewThemes(left.negativeReviews);
+  const rightPositive = summarizeReviewThemes(right.positiveReviews);
+  const rightNegative = summarizeReviewThemes(right.negativeReviews);
+
+  return buildReviewBlocks(left, right).map((block, index) => {
+    const positives = index === 0 ? leftPositive : rightPositive;
+    const negatives = index === 0 ? leftNegative : rightNegative;
+
+    return {
+      ...block,
+      evidence: [...buildReviewEvidence(positives), ...buildReviewEvidence(negatives)].slice(0, 4),
+      opportunities: block.negatives[0] && block.positives[0]
+        ? [
+            `先修 ${block.negatives[0]}，否则放量只会放大差评。`,
+            `把 ${block.positives[0]} 变成主图或副图里可被验证的承诺。`,
+            ...block.opportunities,
+          ].slice(0, 3)
+        : block.opportunities,
+    };
+  });
 }
 
 function buildCompareActionCards(left, right, keywordSets, categoryStats) {
-  const topRisk = [...summarizeReviewThemes(left.negativeReviews), ...summarizeReviewThemes(right.negativeReviews)]
-    .sort((a, b) => b.count - a.count)[0];
-  const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || '核心场景词';
+  const winnerState = chooseWinner(left, right);
+  const winner = winnerState.winner;
+  const other = winnerState.other;
+  const challengerRisks = summarizeReviewThemes(other.negativeReviews);
+  const topRisk = challengerRisks[0];
+  const genericKeyword = keywordSets.generic[0]?.keyword || '核心泛词';
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword || genericKeyword || '核心场景词';
   const medianPrice = categoryStats?.medianPrice;
 
   return [
     {
       priority: 'P0',
-      title: topRisk ? `先处理 ${topRisk.label}` : '先处理高频负评点',
+      title: topRisk ? `先修 ${other.detail.brand || other.detail.asin} 的 ${topRisk.label}` : `先修 ${other.detail.brand || other.detail.asin} 的高频负评点`,
       desc: topRisk
-        ? `当前最伤转化的是 ${topRisk.label}。这类问题不解决，标题、广告和低价都只是暂时掩盖。`
-        : '先把重复出现的真实负评点拉平，再谈流量扩量。',
+        ? `当前最伤转化的是 ${topRisk.label}。这类问题不解决，${other.detail.brand || other.detail.asin} 的标题、广告和低价都只是暂时掩盖。`
+        : `先把 ${other.detail.brand || other.detail.asin} 重复出现的真实负评点拉平，再谈流量扩量。`,
       accentClass: 'border-t-red-500',
     },
     {
       priority: 'P1',
-      title: `围绕 ${scenarioKeyword} 重写标题与主图`,
-      desc: `把 ${scenarioKeyword} 放进标题前半句、主图卖点和副图证明，确保搜索词和页面承诺对齐。`,
+      title: `围绕 ${scenarioKeyword} 重写 ${other.detail.brand || other.detail.asin} 的标题与主图`,
+      desc: `把 ${scenarioKeyword} 放进标题前半句、主图卖点和副图证明，确保搜索词和页面承诺对齐，而不是继续模糊跟随 ${winner.detail.brand || winner.detail.asin}。`,
       accentClass: 'border-t-orange-400',
     },
     {
       priority: 'P1',
-      title: '拆成泛词防守 + 场景词进攻两套广告结构',
-      desc: '泛词只守排名和控量，场景词才是更容易拿到高质量转化的增长抓手。',
+      title: `别再硬拼 ${genericKeyword}，拆成防守盘和进攻盘`,
+      desc: `泛词只做防守和控量，${scenarioKeyword} 这类场景词才是更容易拿到高质量转化的增长抓手。`,
       accentClass: 'border-t-blue-500',
     },
     {
       priority: 'P2',
-      title: medianPrice ? `围绕中位价 ${formatCurrency(medianPrice)} 校正客单` : '复盘价格带与利润空间',
-      desc: '不要只盯最低价。价格、FBA、CPC 和评论门槛要一起看，才能判断这条路有没有利润。',
+      title: medianPrice ? `围绕中位价 ${formatCurrency(medianPrice)} 校正 ${other.detail.brand || other.detail.asin} 客单` : '复盘价格带与利润空间',
+      desc: `不要只盯最低价。价格、FBA、CPC 和评论门槛要一起看，才能判断 ${other.detail.brand || other.detail.asin} 这条路有没有利润。`,
       accentClass: 'border-t-emerald-500',
     },
   ];
 }
 
 function buildCompareRoadmapSteps(left, right, keywordSets) {
+  const winnerState = chooseWinner(left, right);
+  const winner = winnerState.winner;
+  const other = winnerState.other;
   const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || '核心场景词';
+  const topRisk = summarizeReviewThemes(other.negativeReviews)[0];
 
   return [
     {
       phase: 'Week 1',
-      title: `拆 ${left.detail.brand || left.detail.asin} 和 ${right.detail.brand || right.detail.asin} 的转化差`,
-      desc: '先对齐价格、评论护城河、标题定位和主图承诺，确定谁赢在产品、谁赢在流量。',
+      title: `先拆 ${other.detail.brand || other.detail.asin} 为什么输给 ${winner.detail.brand || winner.detail.asin}`,
+      desc: '先对齐价格、评论护城河、标题定位和主图承诺，确定差距到底落在产品、流量还是信任感。',
     },
     {
       phase: 'Week 2',
@@ -1456,12 +1819,12 @@ function buildCompareRoadmapSteps(left, right, keywordSets) {
     {
       phase: 'Week 3',
       title: '重建广告分组',
-      desc: '泛词单独防守，场景词单独进攻，产品词和竞品词分开管理，不混投。',
+      desc: `泛词单独防守，${scenarioKeyword} 单独进攻，产品词和竞品词分开管理，不再混投。`,
     },
     {
       phase: 'Week 4',
-      title: '按评论反馈决定是否做变体或产品修正',
-      desc: '先验证产品风险是否收敛，再决定要不要扩附件、颜色或场景版本。',
+      title: topRisk ? `按 ${topRisk.label} 的反馈决定是否做产品修正` : '按评论反馈决定是否做变体或产品修正',
+      desc: `先验证 ${other.detail.brand || other.detail.asin} 的产品风险是否收敛，再决定要不要扩附件、颜色或场景版本。`,
     },
   ];
 }
@@ -1543,7 +1906,7 @@ function buildCompareModeReport({ session, left, right, categoryReport, keywordI
     report: {
       meta: buildBaseReportMeta('compare'),
       title: buildCompareTitle(left, right, keywordSets),
-      summary: [buildCompareSummary(left, right, categoryReport.stats, keywordSets), extraNote].filter(Boolean).join(' '),
+      summary: [buildCompareSummary(left, right, categoryReport.stats, keywordSets, keywordIntel), extraNote].filter(Boolean).join(' '),
       labels: {
         left: left.detail.brand || left.detail.asin,
         right: right.detail.brand || right.detail.asin,
@@ -1557,7 +1920,7 @@ function buildCompareModeReport({ session, left, right, categoryReport, keywordI
         buildProductCard(left.detail, summarizeReviewThemes(left.positiveReviews)),
         buildProductCard(right.detail, summarizeReviewThemes(right.positiveReviews)),
       ],
-      comparisonRows: buildCompareComparisonRows(left, right, genericKeywordPair),
+      comparisonRows: buildCompareComparisonRows(left, right, genericKeywordPair, keywordIntel),
       categoryCards: buildCategoryCards(categoryReport.stats, left, right),
       categoryRows: buildCategoryRows(left, right, categoryReport.stats),
       trafficColumns: buildCompareTrafficColumns(left, right, keywordSets, keywordIntel),
