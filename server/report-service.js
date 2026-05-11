@@ -1418,19 +1418,19 @@ function buildCompareModeFocus(left, right, categoryStats, keywordSets) {
     title: '模式判断',
     cards: [
       {
-        label: 'Current Winner',
+        label: '当前标杆',
         value: winner.detail.brand || winner.detail.asin,
-        desc: `当前以销量、评论护城河和自然位综合看，${winner.detail.brand || winner.detail.asin} 更像市场基准盘。`,
+        desc: `${winner.detail.brand || winner.detail.asin} 现在更像这条类目的参考答案，销量、评论和自然位都更稳。`,
       },
       {
-        label: 'Challenger Signal',
+        label: '可拆对手',
         value: other.detail.brand || other.detail.asin,
-        desc: `${other.detail.brand || other.detail.asin} 不是简单陪跑，它在 ${scenarioKeyword} 这类词路上仍然有值得细拆的打法。`,
+        desc: `${other.detail.brand || other.detail.asin} 不是陪跑，它在 ${scenarioKeyword} 这类词上还有值得学、也值得避开的地方。`,
       },
       {
-        label: 'Entry Constraint',
+        label: '真正门槛',
         value: categoryStats?.medianPrice ? `中位价 ${formatCurrency(categoryStats.medianPrice)}` : '评论门槛',
-        desc: '当前进入限制主要来自价格带、评论门槛、头部集中度和高意图词竞争强度。',
+        desc: '这条类目难做，不是因为没人买，而是因为价格带、评论门槛和头部款都已经比较强。',
       },
     ],
   };
@@ -1503,19 +1503,19 @@ function buildCompareSummary(left, right, categoryStats, keywordSets, keywordInt
   const genericKeyword = keywordSets.generic[0]?.keyword || '核心泛词';
   const scenarioKeyword = snapshot.scenarioKeyword;
   const topKeyword = keywordIntel[0]?.detail;
-  const factLine = `事实：${left.detail.brand || left.detail.asin} 当前月销约 ${formatNumber(left.detail.monthlySales)}、月销额 ${formatCurrency(left.detail.monthlyRevenue)}；${right.detail.brand || right.detail.asin} 当前月销约 ${formatNumber(right.detail.monthlySales)}、月销额 ${formatCurrency(right.detail.monthlyRevenue)}。`;
+  const factLine = `先看结果：${left.detail.brand || left.detail.asin} 当前月销约 ${formatNumber(left.detail.monthlySales)}、月销额 ${formatCurrency(left.detail.monthlyRevenue)}；${right.detail.brand || right.detail.asin} 当前月销约 ${formatNumber(right.detail.monthlySales)}、月销额 ${formatCurrency(right.detail.monthlyRevenue)}。`;
   const categoryLine = categoryStats?.name
-    ? `类目事实：两者同处 ${categoryStats.name}，Top100 月销量约 ${formatNumber(categoryStats.top100Sales)}，中位价 ${formatCurrency(categoryStats.medianPrice)}，Top10 平均月销约 ${formatNumber(Math.round(categoryStats.top10AverageSales || 0))}，高评论销量占比 ${formatPercent(categoryStats.highReviewsShare)}。`
-    : '类目事实：当前类目统计样本不足。';
+    ? `再看类目：两者都在 ${categoryStats.name}，中位价约 ${formatCurrency(categoryStats.medianPrice)}，Top10 平均月销约 ${formatNumber(Math.round(categoryStats.top10AverageSales || 0))}，高评论产品吃走了 ${formatPercent(categoryStats.highReviewsShare)} 的销量。`
+    : '再看类目：当前类目样本还不够完整。';
   const trendLine =
     snapshot.leftTrend?.delta !== null && snapshot.rightTrend?.delta !== null
-      ? `趋势事实：${left.detail.brand || left.detail.asin} 近12期约 ${formatSignedPercent(snapshot.leftTrend.delta)}，${right.detail.brand || right.detail.asin} 近12期约 ${formatSignedPercent(snapshot.rightTrend.delta)}。`
-      : '趋势事实：当前趋势样本不足。';
+      ? `最近走势上，${left.detail.brand || left.detail.asin} 近 12 期约 ${formatSignedPercent(snapshot.leftTrend.delta)}，${right.detail.brand || right.detail.asin} 近 12 期约 ${formatSignedPercent(snapshot.rightTrend.delta)}。`
+      : '最近走势上，当前趋势样本还不够完整。';
   const barrierLine = topKeyword?.pageOneStats
-    ? `词路事实：${topKeyword.keyword} 首页自然位里，非 Best Seller 占比约 ${formatPercent(topKeyword.pageOneStats.nonBestSellerShare)}，评论低于 100 的占比约 ${formatPercent(topKeyword.pageOneStats.naturalLowReview100)}，说明最大泛词并不轻松。`
-    : '词路事实：当前关键词首页门槛样本不足。';
-  const verdictLine = `判断：${winner.detail.brand || winner.detail.asin} 更像当前基准盘，因为它在成交规模、评论护城河、自然位或趋势稳定性上更完整；${other.detail.brand || other.detail.asin} 更值得拆的部分，不是绝对低价，而是 ${scenarioKeyword ? `${scenarioKeyword}` : genericKeyword} 这一侧的词路和内容打法。`;
-  const actionLine = `执行焦点：不要继续把预算砸在 ${genericKeyword} 这种最大泛词上，先把 ${other.detail.brand || other.detail.asin} 的页面承诺、评论风险和 ${scenarioKeyword || genericKeyword} 词路打通，再决定要不要扩量。`;
+    ? `词路门槛也不低：在 ${topKeyword.keyword} 这个大词里，首页自然位里评论低于 100 的产品只占 ${formatPercent(topKeyword.pageOneStats.naturalLowReview100)}，说明不是随便一个新品就能冲上去。`
+    : '词路门槛上，当前关键词首页样本还不够完整。';
+  const verdictLine = `结论很简单：${winner.detail.brand || winner.detail.asin} 更像当前标杆，因为它在销量、评论和自然位上都更稳；${other.detail.brand || other.detail.asin} 真正值得学的，不是低价，而是 ${scenarioKeyword ? `${scenarioKeyword}` : genericKeyword} 这条更容易打透的词路。`;
+  const actionLine = `下一步也很明确：先别继续硬打 ${genericKeyword} 这种最大词，先把 ${other.detail.brand || other.detail.asin} 的页面说清楚、差评问题压下去，再决定要不要放大预算。`;
 
   return [factLine, categoryLine, barrierLine, trendLine, verdictLine, actionLine].join(' ');
 }
@@ -1531,27 +1531,27 @@ function buildCompareHeroCards(left, right, categoryStats, keywordSets) {
 
   return [
     {
-      label: 'Current Winner',
+      label: '当前标杆',
       value: winner.detail.brand || winner.detail.asin,
-      desc: `${winner.detail.brand || winner.detail.asin} 现在更像头部基准，因为它同时拿住了月销 ${formatNumber(winner.detail.monthlySales)}、评论 ${formatNumber(winner.detail.reviewCount)} 和 P1 自然位。`,
+      desc: `${winner.detail.brand || winner.detail.asin} 现在更像头部基准，销量、评论和自然位都更完整。`,
     },
     {
-      label: 'Challenger Signal',
+      label: '可拆信号',
       value: other.detail.brand || other.detail.asin,
       desc:
         scenarioKeyword
-          ? `${other.detail.brand || other.detail.asin} 不一定赢在总盘子，但 ${otherTrend?.delta !== null ? `近 12 期约 ${formatSignedPercent(otherTrend.delta)}，` : ''}在 ${scenarioKeyword} 这类高意图词上仍有进攻窗口。`
-          : `${other.detail.brand || other.detail.asin} 更适合拿来拆词路、内容结构和进攻窗口。`,
+          ? `${other.detail.brand || other.detail.asin} 体量没赢，但${otherTrend?.delta !== null ? `最近还在涨，` : ''}${scenarioKeyword} 这类词上还有切入机会。`
+          : `${other.detail.brand || other.detail.asin} 更适合拿来拆词路、页面和进攻方式。`,
     },
     {
-      label: 'Next Move',
+      label: '下一步',
       value: scenarioKeyword || (categoryStats?.medianPrice ? `中位价 ${formatCurrency(categoryStats.medianPrice)}` : '先拆高意图词'),
       desc:
         scenarioKeyword
           ? otherTraffic.adOnlyCount > 0
-            ? `先围绕 ${scenarioKeyword} 修页面承诺和广告结构；当前广告独占词还有 ${otherTraffic.adOnlyCount} 个，说明别急着继续放量。`
-            : `先围绕 ${scenarioKeyword} 修页面承诺和广告结构；当前更该补自然词覆盖和转化证明，而不是继续加预算。`
-          : `先看价格带、评论门槛和高频差评，再决定真正的切入路径。`,
+            ? `先把 ${scenarioKeyword} 相关页面和广告理顺。现在还有不少词靠广告撑着，不适合马上放量。`
+            : `先把 ${scenarioKeyword} 相关页面说清楚，先补转化，再谈加预算。`
+          : `先把价格、评论和高频差评看明白，再决定怎么切进去。`,
     },
   ];
 }
@@ -1565,16 +1565,16 @@ function buildCompareSectionCopy(left, right, categoryStats, keywordSets) {
   const rightLabel = right.detail.brand || right.detail.asin;
 
   return {
-    products: `两款 ASIN 位于同一细分类目，但打法不同：${winner.detail.brand || winner.detail.asin} 更像成熟基准盘，${other.detail.brand || other.detail.asin} 更像仍在寻找最优切口的挑战者。`,
-    comparison: `以下对比不是回答“谁更好”，而是回答：${other.detail.brand || other.detail.asin} 继续往上做，应该学 ${winner.detail.brand || winner.detail.asin} 的什么，不该复制它的什么。当前销量比约 ${snapshot.salesRatio ? `${snapshot.salesRatio}x` : '未知'}，评论护城河差约 ${snapshot.reviewRatio ? `${snapshot.reviewRatio}x` : '未知'}。`,
-    modeFocus: '这里先定角色，再定打法：谁定义市场，谁提供进攻窗口，真正的进入限制是什么。',
-    category: `这个类目盘子够大，但不是轻松蓝海。进入难度实际由中位价 ${snapshot.medianPrice ? formatCurrency(snapshot.medianPrice) : '未知'}、Top10 头部线、高评论销量占比，以及 Amazon 自营和品牌集中度共同决定。`,
+    products: `两款 ASIN 在同一个类目里都卖得动，但走的不是一条路：一个更像成熟款，一个更像还在找突破口的款。`,
+    comparison: `这部分不只是比参数，而是回答一个更实际的问题：${other.detail.brand || other.detail.asin} 如果还想往上做，到底该学 ${winner.detail.brand || winner.detail.asin} 什么，不该学什么。当前销量差大约 ${snapshot.salesRatio ? `${snapshot.salesRatio} 倍` : '未知'}，评论差大约 ${snapshot.reviewRatio ? `${snapshot.reviewRatio} 倍` : '未知'}。`,
+    modeFocus: '先把角色看清楚：谁是现在的参考答案，谁只是给我们提供打法样本。',
+    category: `这个类目有量，但并不好打。真正的门槛不是“有没有需求”，而是价格带、评论门槛和头部款已经卷到什么程度。`,
     traffic: snapshot.scenarioKeyword
-      ? `流量结构已经很清楚：${winner.detail.brand || winner.detail.asin} 更像泛词守盘方，${other.detail.brand || other.detail.asin} 更适合从 ${snapshot.scenarioKeyword} 这种高意图词切开，但前提是别让广告依赖继续放大。`
-      : '流量结构已经很清楚：真正值得抢的不是最大泛词，而是更高意图、更可转化的词路。',
-    reviews: `评论区要拆成两件事：哪些点在支撑成交，哪些点会让 ${other.detail.brand || other.detail.asin} 一放量就把差评和退货一起放大。`,
-    actions: `以下建议默认以 ${other.detail.brand || other.detail.asin} 为执行对象，目标不是复制 ${winner.detail.brand || winner.detail.asin}，而是把它做成更稳的差异化打法。`,
-    roadmap: `${other.detail.brand || other.detail.asin} 下一阶段的顺序应该是：先修转化基础，再稳住细分词，最后才考虑扩量。`,
+      ? `流量结构已经比较清楚：${winner.detail.brand || winner.detail.asin} 更像守住大词的一方，${other.detail.brand || other.detail.asin} 更适合从 ${snapshot.scenarioKeyword} 这种更具体的词切进去。`
+      : '流量结构已经比较清楚：真正值得抢的，不一定是最大词，而是更容易转化的具体词。',
+    reviews: `评论这里重点看两件事：什么在帮它成交，什么会让它一放量就开始掉分、退货。`,
+    actions: `下面的建议默认都是给 ${other.detail.brand || other.detail.asin} 用的，目标不是把它做成另一个 ${winner.detail.brand || winner.detail.asin}，而是让它先站稳。`,
+    roadmap: `${other.detail.brand || other.detail.asin} 后面最合理的顺序是：先把转化基础修好，再把细分词跑稳，最后再考虑扩量。`,
   };
 }
 
@@ -1588,19 +1588,19 @@ function buildCompareTrafficInsight(left, right, categoryStats, keywordIntel, ke
   const trafficRight = summarizeTrafficStructure(right);
   const expansion = collectKeywordExpansionPoints(keywordIntel, [left.detail.brand || '', right.detail.brand || ''])[0];
   const barrierText = topKeyword?.pageOneStats
-    ? `${topKeyword.keyword} 首页非 Best Seller 占比约 ${formatPercent(topKeyword.pageOneStats.nonBestSellerShare)}，自然位评论低于 100 的占比约 ${formatPercent(topKeyword.pageOneStats.naturalLowReview100)}，coupon 渗透约 ${formatPercent(topKeyword.pageOneStats.couponShare)}。`
-    : '当前还没有足够稳定的首页进入门槛样本。';
+    ? `以 ${topKeyword.keyword} 这个大词看，首页里低评论产品并不多，说明这个词不是新链接轻松能抢下来的。`
+    : '当前还没有足够稳定的首页门槛样本。';
 
   return [
-    `事实：${categoryStats?.name || '当前类目'} Top100 月销量约 ${formatNumber(categoryStats?.top100Sales)}，中位价 ${formatCurrency(categoryStats?.medianPrice)}。`,
+    `先看大盘：${categoryStats?.name || '当前类目'} Top100 月销量约 ${formatNumber(categoryStats?.top100Sales)}，中位价 ${formatCurrency(categoryStats?.medianPrice)}。`,
     topKeyword
-      ? `词路事实：${topKeyword.keyword} 月搜索量 ${formatNumber(topKeyword.monthlyVolume)}，推荐 CPC ${formatCurrency(topKeyword.cpc)}，搜索结果约 ${formatNumber(topKeyword.resultCount)}，旺季在 ${topKeyword.peakMonth || '未知'}。`
-      : '词路事实：当前关键词细节样本不足。',
+      ? `再看核心词：${topKeyword.keyword} 月搜索量约 ${formatNumber(topKeyword.monthlyVolume)}，推荐 CPC ${formatCurrency(topKeyword.cpc)}，搜索结果约 ${formatNumber(topKeyword.resultCount)}。`
+      : '再看核心词：当前关键词细节样本不足。',
     barrierText,
     expansion
-      ? `扩展事实：下一批高价值长尾里，${expansion}。`
-      : '扩展事实：当前长尾扩展样本不足。',
-    `判断：${winner.detail.brand || winner.detail.asin} 更像泛词守盘方，${other.detail.brand || other.detail.asin} 更值得从 ${scenarioKeyword} 这种高意图词切开，而不是硬拼最大泛词。当前 P1 自然词覆盖 ${left.detail.brand || left.detail.asin}/${right.detail.brand || right.detail.asin} 分别约 ${trafficLeft.organicPageOneCount}/${trafficRight.organicPageOneCount} 个。`,
+      ? `接下来更值得测的长尾词里，${expansion}。`
+      : '接下来更值得测的长尾词样本还不够。',
+    `结论：${winner.detail.brand || winner.detail.asin} 更像守住大词的一方，${other.detail.brand || other.detail.asin} 更适合先从 ${scenarioKeyword} 这种更具体的词切，不要一开始就去硬拼最大词。`,
   ].join(' ');
 }
 
@@ -1619,33 +1619,33 @@ function buildCompareComparisonRows(left, right, genericKeywordPair, keywordInte
       title: '标题与定位',
       val1: trimText(left.detail.title),
       val2: trimText(right.detail.title),
-      desc: '先看标题前半句到底在抢泛词、场景词还是人群词，这决定点击质量和转化预期。',
+      desc: '先看它到底在卖“什么东西、给谁用、什么场景用”，这会直接影响点进来的人准不准。',
     },
     ...baseRows,
     {
       title: '变体策略',
       val1: formatNumber(left.detail.variations),
       val2: formatNumber(right.detail.variations),
-      desc: '变体多不一定赢，但更多子体通常意味着更强的颜色、附件或人群覆盖。',
+      desc: '变体多不代表一定卖得更好，但通常说明它接得住更多颜色、附件或人群需求。',
       highlight: compareByBetter(left, right, (dataset) => dataset.detail.variations),
     },
     {
       title: '卖家来源 / 上架时间',
       val1: `${left.detail.sellerSource || '未知'} / ${left.detail.listedAt || '未知'}`,
       val2: `${right.detail.sellerSource || '未知'} / ${right.detail.listedAt || '未知'}`,
-      desc: '卖家来源看供给属性，上架时间看积累周期。年轻 listing 但能打进头部通常更值得重视。',
+      desc: '这里主要看两件事：它是老链接慢慢做起来的，还是新链接快速冲起来的。',
     },
     {
       title: '包装 / 重量',
       val1: `${left.detail.packageSizeCm || '未知'} / ${left.detail.weightG ? `${left.detail.weightG}g` : '未知'}`,
       val2: `${right.detail.packageSizeCm || '未知'} / ${right.detail.weightG ? `${right.detail.weightG}g` : '未知'}`,
-      desc: '包装尺寸和重量会直接影响 FBA、运输和利润空间，不能只看售价判断商业性。',
+      desc: '包装和重量会直接影响 FBA 和运输成本，所以不能只看售价判断它赚不赚钱。',
     },
     {
       title: '近12期销量趋势',
       val1: leftTrend ? `${formatNumber(leftTrend.first)} -> ${formatNumber(leftTrend.last)} (${formatSignedPercent(leftTrend.delta)})` : '样本不足',
       val2: rightTrend ? `${formatNumber(rightTrend.first)} -> ${formatNumber(rightTrend.last)} (${formatSignedPercent(rightTrend.delta)})` : '样本不足',
-      desc: '销量趋势帮助判断当前是稳盘、回落还是二次爬坡，避免只看单月销量下判断。',
+      desc: '只看单月容易误判，这里主要看它是在稳着卖、往下掉，还是还在往上冲。',
       highlight:
         leftTrend?.delta !== null && rightTrend?.delta !== null
           ? compareByBetter({ detail: { delta: leftTrend.delta } }, { detail: { delta: rightTrend.delta } }, (dataset) => dataset.detail.delta)
@@ -1655,7 +1655,7 @@ function buildCompareComparisonRows(left, right, genericKeywordPair, keywordInte
       title: '自然覆盖 / 广告依赖',
       val1: `P1 自然词 ${leftTraffic.organicPageOneCount} / 广告独占 ${leftTraffic.adOnlyCount}`,
       val2: `P1 自然词 ${rightTraffic.organicPageOneCount} / 广告独占 ${rightTraffic.adOnlyCount}`,
-      desc: '自然词更多的一侧更稳，广告独占词过多的一侧更可能依赖持续投放维持量级。',
+      desc: '自然词多的一边更稳，很多词只能靠广告顶着的一边，放量风险也更大。',
       highlight:
         leftTraffic.organicPageOneCount !== rightTraffic.organicPageOneCount
           ? leftTraffic.organicPageOneCount > rightTraffic.organicPageOneCount ? 'left' : 'right'
@@ -1666,15 +1666,15 @@ function buildCompareComparisonRows(left, right, genericKeywordPair, keywordInte
       val1: `${formatNumber(left.detail.reviewCount)} 评 / ${describeKeywordAccessibility(topKeyword)}`,
       val2: `${formatNumber(right.detail.reviewCount)} 评 / ${describeKeywordAccessibility(topKeyword)}`,
       desc: topKeyword?.pageOneStats
-        ? `以 ${topKeyword.keyword} 为例，首页自然位里评论 <100 的占比约 ${formatPercent(topKeyword.pageOneStats.naturalLowReview100)}，非 Best Seller 占比约 ${formatPercent(topKeyword.pageOneStats.nonBestSellerShare)}。`
-        : '当前还没有足够稳定的关键词首页门槛样本。',
+        ? `以 ${topKeyword.keyword} 为例，首页里低评论产品不多，所以这个词不是靠一条新链接就能轻松打上去的。`
+        : '当前还没有足够稳定的首页门槛样本。',
       highlight: compareByBetter(left, right, (dataset) => dataset.detail.reviewCount),
     },
     {
       title: '卖点与属性承诺',
       val1: leftClaims.join(' / ') || '样本不足',
       val2: rightClaims.join(' / ') || '样本不足',
-      desc: '这行不是看谁词更多，而是看谁的产品承诺更清晰、更容易在图文和评论里被验证。',
+      desc: '这里看的是它页面到底在承诺什么，这些承诺能不能在图片和评论里对得上。',
     },
   ];
 }
@@ -1773,26 +1773,26 @@ function buildCompareActionCards(left, right, keywordSets, categoryStats) {
       priority: 'P0',
       title: topRisk ? `先修 ${other.detail.brand || other.detail.asin} 的 ${topRisk.label}` : `先修 ${other.detail.brand || other.detail.asin} 的高频负评点`,
       desc: topRisk
-        ? `当前最伤转化的是 ${topRisk.label}。这类问题不解决，${other.detail.brand || other.detail.asin} 的标题、广告和低价都只是暂时掩盖。`
-        : `先把 ${other.detail.brand || other.detail.asin} 重复出现的真实负评点拉平，再谈流量扩量。`,
+        ? `现在最先要处理的是 ${topRisk.label}。这个问题不解决，流量再多也只会把差评放大。`
+        : `先把 ${other.detail.brand || other.detail.asin} 最常见的负评问题压下去，再谈放量。`,
       accentClass: 'border-t-red-500',
     },
     {
       priority: 'P1',
       title: `围绕 ${scenarioKeyword} 重写 ${other.detail.brand || other.detail.asin} 的标题与主图`,
-      desc: `把 ${scenarioKeyword} 放进标题前半句、主图卖点和副图证明，确保搜索词和页面承诺对齐，而不是继续模糊跟随 ${winner.detail.brand || winner.detail.asin}。`,
+      desc: `把 ${scenarioKeyword} 放进标题、主图和副图里，让用户一眼看懂它卖的到底是什么，不要再写得模糊。`,
       accentClass: 'border-t-orange-400',
     },
     {
       priority: 'P1',
       title: `别再硬拼 ${genericKeyword}，拆成防守盘和进攻盘`,
-      desc: `泛词只做防守和控量，${scenarioKeyword} 这类场景词才是更容易拿到高质量转化的增长抓手。`,
+      desc: `${genericKeyword} 这种大词先少打，先把 ${scenarioKeyword} 这种更具体、更容易成交的词跑顺。`,
       accentClass: 'border-t-blue-500',
     },
     {
       priority: 'P2',
       title: medianPrice ? `围绕中位价 ${formatCurrency(medianPrice)} 校正 ${other.detail.brand || other.detail.asin} 客单` : '复盘价格带与利润空间',
-      desc: `不要只盯最低价。价格、FBA、CPC 和评论门槛要一起看，才能判断 ${other.detail.brand || other.detail.asin} 这条路有没有利润。`,
+      desc: `不要一味压低价格。要把售价、FBA、广告成本一起看，先确认这条路做下来到底赚不赚钱。`,
       accentClass: 'border-t-emerald-500',
     },
   ];
@@ -1809,22 +1809,22 @@ function buildCompareRoadmapSteps(left, right, keywordSets) {
     {
       phase: 'Week 1',
       title: `先拆 ${other.detail.brand || other.detail.asin} 为什么输给 ${winner.detail.brand || winner.detail.asin}`,
-      desc: '先对齐价格、评论护城河、标题定位和主图承诺，确定差距到底落在产品、流量还是信任感。',
+      desc: '先把价格、评论、标题和主图放在一起看清楚，确认它到底输在产品、流量还是页面表达。',
     },
     {
       phase: 'Week 2',
       title: `围绕 ${scenarioKeyword} 改标题、主图和 bullet`,
-      desc: '让高意图词和页面承诺一致，避免广告进来的流量在详情页丢失。',
+      desc: '让用户搜这个词进来以后，第一眼就知道这是不是他要的东西，别让流量白白流失。',
     },
     {
       phase: 'Week 3',
       title: '重建广告分组',
-      desc: `泛词单独防守，${scenarioKeyword} 单独进攻，产品词和竞品词分开管理，不再混投。`,
+      desc: `大词单独守，${scenarioKeyword} 这类词单独打，产品词和竞品词分开，不要再混在一起烧钱。`,
     },
     {
       phase: 'Week 4',
       title: topRisk ? `按 ${topRisk.label} 的反馈决定是否做产品修正` : '按评论反馈决定是否做变体或产品修正',
-      desc: `先验证 ${other.detail.brand || other.detail.asin} 的产品风险是否收敛，再决定要不要扩附件、颜色或场景版本。`,
+      desc: `先看最关键的负评有没有压下来，再决定要不要改产品、扩颜色或者扩场景版本。`,
     },
   ];
 }
