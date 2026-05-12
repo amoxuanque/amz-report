@@ -5,12 +5,12 @@ export default function handler(_req, res) {
     resolveSorftimeMcpUrl();
     res.status(200).json({
       ok: true,
-      hasSorftimeUrl: true,
+      hasDataService: true,
     });
   } catch (error) {
     res.status(500).json({
       ok: false,
-      error: error.message || 'Sorftime MCP 未配置。',
+      error: error.message || '数据服务未配置。',
     });
   }
 }

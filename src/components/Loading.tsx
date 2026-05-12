@@ -16,7 +16,7 @@ const steps: Record<Mode, Array<{ text: string; icon: typeof Target }>> = {
     { text: '生成竞品候选网络...', icon: FileText },
   ],
   compare: [
-    { text: '正在抓取 Sorftime 商品全貌...', icon: Target },
+    { text: '正在抓取商品全貌与成交信号...', icon: Target },
     { text: '比对流量词分布结构...', icon: Search },
     { text: '抽取评价痛点与正面特征...', icon: BarChart },
     { text: '合成跨维度商业分析报告...', icon: FileText },

@@ -2055,7 +2055,7 @@ function buildSummary(mode, left, right, categoryStats, extraNote) {
       ? '这份报告先用 Amazon 真实市场数据判断谁是基准盘，再补 1688 供给锚点，避免只看供货价做错方向。'
       : mode === 'find'
         ? '这份报告先用真实类目和流量数据找到最值得盯的竞对，再给出下一步应跟踪的内容。'
-        : '这份报告直接对比两支 ASIN 的成交、评论、类目和流量结构，结论以实时 Sorftime 数据为准。';
+        : '这份报告直接对比两支 ASIN 的成交、评论、类目和流量结构，结论以实时市场数据为准。';
 
   return [modeLine, compareLine, categoryLine, extraNote].filter(Boolean).join(' ');
 }
@@ -3005,7 +3005,7 @@ function buildSourceCandidatePoolCards(sourcing) {
       '能不能做扩散罩/负离子/高速这类主流配置，比单个报价更重要。',
       '低价但路线不对的样本，只会把后面的打样和上架都带偏。',
     ],
-    caution: '当前 MCP 只直出货源详情 URL，店铺入口这里用的是 1688 店铺检索入口，不是直接旺铺页。',
+    caution: '当前只直出货源详情链接，店铺入口这里用的是 1688 店铺检索入口，不是直接旺铺页。',
   });
 
   return cards.slice(0, 4);
@@ -3622,7 +3622,7 @@ async function collectSpaceSignals({ primarySite, searchName, primaryCategorySta
   };
 }
 
-function buildBaseReportMeta(mode, marketplace = 'Amazon US', source = 'Sorftime MCP') {
+function buildBaseReportMeta(mode, marketplace = 'Amazon US', source = 'Live Market Intelligence') {
   return {
     date: new Date().toISOString().slice(0, 10),
     marketplace,
@@ -3991,7 +3991,7 @@ function buildSpaceModeReport({ session, site, seedDataset, categoryReport, keyw
   return {
     session,
     report: {
-      meta: buildBaseReportMeta('space', `${getAmazonMarketplaceLabel(site)} baseline / Multi-platform`, 'Sorftime MCP'),
+      meta: buildBaseReportMeta('space', `${getAmazonMarketplaceLabel(site)} baseline / Multi-platform`, 'Live Market Intelligence'),
       title: `${searchName} 当前更适合先去 ${buildSpacePlatformLabel(topOpportunity)}，${topOpportunity.decision}。`,
       summary: [
         seedDataset

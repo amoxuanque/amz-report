@@ -53,16 +53,16 @@ export default function Home({ onAnalyze, serverError }: HomeProps) {
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
             </span>
-            Seller Brief powered by Sorftime
+            Cross-Border Market Intelligence
           </motion.div>
           <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight text-slate-900 mb-6 shadow-sm">
-            Stop Guessing. <br />
+            Read Demand. <br />
             <span className="text-blue-600">
-              Start Briefing.
+              Enter Smarter.
             </span>
           </h1>
           <p className="text-lg md:text-xl text-slate-500 font-medium max-w-xl mx-auto tracking-wide">
-            一次输入，直达结论。将品类空间、竞对发现、差异分析与 1688 寻源收敛于统一入口。
+            一次输入，直达结论。把品类空间、竞对发现、差异分析和供应链判断收敛成一份跨境增长简报。
           </p>
         </div>
 

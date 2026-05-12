@@ -12,7 +12,7 @@ export function resolveSorftimeMcpUrl() {
 
   const configPath = path.join(os.homedir(), '.codex', 'config.toml');
   if (!fs.existsSync(configPath)) {
-    throw new Error('未找到 SORFTIME_MCP_URL，也无法从 ~/.codex/config.toml 读取 sorftime_mcp.url。');
+    throw new Error('未找到数据服务配置。');
   }
 
   const config = fs.readFileSync(configPath, 'utf8');
@@ -21,7 +21,7 @@ export function resolveSorftimeMcpUrl() {
   );
 
   if (!match?.[1]) {
-    throw new Error('无法从 ~/.codex/config.toml 解析 sorftime_mcp.url。');
+    throw new Error('数据服务配置解析失败。');
   }
 
   return match[1];
@@ -42,7 +42,7 @@ function parseRpcResponse(body) {
     }
   }
 
-  throw new Error('Sorftime MCP 返回格式无法解析。');
+  throw new Error('数据服务返回格式无法解析。');
 }
 
 function callSorftimeRpc(method, params) {
@@ -78,7 +78,7 @@ function callSorftimeRpc(method, params) {
           try {
             const message = parseRpcResponse(body);
             if (message.error) {
-              reject(new Error(message.error.message || 'Sorftime MCP 调用失败。'));
+              reject(new Error(message.error.message || '数据服务调用失败。'));
               return;
             }
 
