@@ -11,7 +11,9 @@ export default async function handler(req, res) {
 
   try {
     const session = req.body?.session;
-    if (!session?.mode || !Array.isArray(session?.asins) || session.asins.length === 0) {
+    const hasAsins = Array.isArray(session?.asins) && session.asins.length > 0;
+    const hasSpaceQuery = session?.mode === 'space' && typeof session?.query === 'string' && session.query.trim();
+    if (!session?.mode || (!hasAsins && !hasSpaceQuery)) {
       res.status(400).json({
         error: '请求缺少有效的分析参数。',
       });
