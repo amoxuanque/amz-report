@@ -1,7 +1,7 @@
 import { motion } from 'motion/react';
 import { useState, useEffect } from 'react';
 import { Target, Search, BarChart, FileText } from 'lucide-react';
-import { getModeLabel } from '../lib/analysis';
+import { getModeLabel, getSiteLabel } from '../lib/analysis';
 import type { AnalysisSession, Mode } from '../types/analysis';
 
 interface LoadingProps {
@@ -27,11 +27,18 @@ const steps: Record<Mode, Array<{ text: string; icon: typeof Target }>> = {
     { text: '排查工厂资质与履约信号...', icon: BarChart },
     { text: '生成供应链决策建议...', icon: FileText },
   ],
+  space: [
+    { text: '解析基准 ASIN 或品类词...', icon: Target },
+    { text: '扫描 Amazon 多站点空间...', icon: Search },
+    { text: '补 TikTok / Walmart 平台信号...', icon: BarChart },
+    { text: '生成准入与站点建议...', icon: FileText },
+  ],
 };
 
 export default function Loading({ session }: LoadingProps) {
   const [currentStep, setCurrentStep] = useState(0);
   const currentSteps = steps[session.mode];
+  const subjectLabel = session.asins.length > 0 ? session.asins.join(' / ') : session.query;
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -60,10 +67,10 @@ export default function Loading({ session }: LoadingProps) {
 
         <div className="mb-8 text-center">
           <div className="text-sm font-semibold text-slate-500">
-            {getModeLabel(session.mode)}
+            {getModeLabel(session.mode)} {session.site !== 'AUTO' ? `· ${getSiteLabel(session.site)}` : ''}
           </div>
           <div className="mt-2 text-xl font-semibold text-slate-900">
-            {session.asins.join(' / ')}
+            {subjectLabel}
           </div>
         </div>
         

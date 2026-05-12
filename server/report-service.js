@@ -13,6 +13,49 @@ const SCENARIO_HINTS = [
   'lightweight',
 ];
 
+const AMAZON_SITE_LABELS = {
+  US: 'Amazon US',
+  GB: 'Amazon UK',
+  DE: 'Amazon DE',
+  FR: 'Amazon FR',
+  IN: 'Amazon IN',
+  CA: 'Amazon CA',
+  JP: 'Amazon JP',
+  ES: 'Amazon ES',
+  IT: 'Amazon IT',
+  MX: 'Amazon MX',
+  AE: 'Amazon AE',
+  AU: 'Amazon AU',
+  BR: 'Amazon BR',
+  SA: 'Amazon SA',
+};
+
+const AMAZON_SITES = Object.keys(AMAZON_SITE_LABELS);
+const SPACE_AMAZON_SCAN_SITES = ['US', 'GB', 'DE', 'JP'];
+const SPACE_TIKTOK_SCAN_SITES = ['US', 'GB', 'ID'];
+const AMAZON_SITE_CURRENCIES = {
+  US: { prefix: '$', decimals: 2 },
+  GB: { prefix: '£', decimals: 2 },
+  DE: { prefix: '€', decimals: 2 },
+  FR: { prefix: '€', decimals: 2 },
+  IN: { prefix: '₹', decimals: 2 },
+  CA: { prefix: 'C$', decimals: 2 },
+  JP: { prefix: '¥', decimals: 0 },
+  ES: { prefix: '€', decimals: 2 },
+  IT: { prefix: '€', decimals: 2 },
+  MX: { prefix: 'MX$', decimals: 2 },
+  AE: { prefix: 'AED ', decimals: 2 },
+  AU: { prefix: 'A$', decimals: 2 },
+  BR: { prefix: 'R$', decimals: 2 },
+  SA: { prefix: 'SAR ', decimals: 2 },
+};
+const TIKTOK_SITE_CURRENCIES = {
+  US: { prefix: '$', decimals: 2 },
+  GB: { prefix: '£', decimals: 2 },
+  ID: { prefix: 'Rp', decimals: 0 },
+};
+const WALMART_CURRENCY = { prefix: '$', decimals: 2 };
+
 const REVIEW_THEMES = [
   { label: '干发速度', patterns: [/fast dry/i, /dry.*fast/i, /dries.*fast/i, /quick dry/i] },
   { label: '轻量手感', patterns: [/lightweight/i, /light weight/i, /light\b/i] },
@@ -25,7 +68,14 @@ const REVIEW_THEMES = [
 ];
 
 function buildNavItems(mode) {
-  const modeLabel = mode === 'compare' ? '模式判断' : mode === 'find' ? '锁定逻辑' : '寻源判断';
+  const modeLabel =
+    mode === 'compare'
+      ? '模式判断'
+      : mode === 'find'
+        ? '锁定逻辑'
+        : mode === 'space'
+          ? '准入判断'
+          : '寻源判断';
   const items = [
     { id: '产品卡', label: '产品卡' },
     { id: modeLabel, label: modeLabel },
@@ -45,7 +95,19 @@ function buildNavItems(mode) {
     items.splice(2, 0, { id: '推荐厂家', label: '推荐厂家' });
   }
 
+  if (mode === 'space') {
+    items.splice(2, 0, { id: '机会平台', label: '机会平台' });
+  }
+
   return items;
+}
+
+function resolveAmazonSite(site) {
+  return AMAZON_SITES.includes(site) ? site : 'US';
+}
+
+function getAmazonMarketplaceLabel(site) {
+  return AMAZON_SITE_LABELS[resolveAmazonSite(site)] || 'Amazon US';
 }
 
 function safeJsonParse(text, fallback = null) {
@@ -104,12 +166,15 @@ function formatNumber(value) {
   return new Intl.NumberFormat('en-US').format(Number(value));
 }
 
-function formatCurrency(value, currency = '$') {
+function formatCurrency(value, currency = '$', decimals = 2) {
   if (value === null || value === undefined || Number.isNaN(value)) {
     return '未知';
   }
 
-  return `${currency}${Number(value).toFixed(2)}`;
+  return `${currency}${new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  }).format(Number(value))}`;
 }
 
 function formatPercent(value) {
@@ -175,6 +240,47 @@ function parseProductDetail(text, asinHint) {
     attributes: parseEmbeddedJson(text, '属性'),
     features: parseEmbeddedJson(text, '特征'),
   };
+}
+
+function isMissingProductDetailText(text) {
+  return /未查询到对应产品|请检查传入产品ASIN/.test(String(text || ''));
+}
+
+function getAmazonCurrencyConfig(site) {
+  return AMAZON_SITE_CURRENCIES[resolveAmazonSite(site)] || AMAZON_SITE_CURRENCIES.US;
+}
+
+function getTikTokCurrencyConfig(site) {
+  return TIKTOK_SITE_CURRENCIES[site] || TIKTOK_SITE_CURRENCIES.US;
+}
+
+function normalizeWalmartPrice(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return null;
+  }
+
+  return Number.isInteger(value) && value >= 100 ? value / 100 : value;
+}
+
+function getSignalCurrencyConfig(signal) {
+  if (!signal) {
+    return AMAZON_SITE_CURRENCIES.US;
+  }
+
+  if (signal.platform === 'Amazon') {
+    return getAmazonCurrencyConfig(signal.site);
+  }
+
+  if (signal.platform === 'TikTok') {
+    return getTikTokCurrencyConfig(signal.site);
+  }
+
+  return WALMART_CURRENCY;
+}
+
+function formatSignalPrice(signal, value) {
+  const config = getSignalCurrencyConfig(signal);
+  return formatCurrency(value, config.prefix, config.decimals);
 }
 
 function parseTrend(text) {
@@ -272,6 +378,75 @@ function parseCategoryReport(text) {
       ...benchmarks,
     },
   };
+}
+
+function parseCategorySearchResults(text) {
+  const items = safeJsonParse(text, []);
+  return Array.isArray(items)
+    ? items.map((item) => ({
+        nodeId: item.nodeid || null,
+        name: item['类目名称'] || null,
+        top100Sales: toNumber(item['Top100产品月销量']),
+        top100Revenue: toNumber(item['Top100产品月销额']),
+        averageRating: toNumber(item['平均星级']),
+        averageReviews: toNumber(item['平均评价数量']),
+        averagePrice: toNumber(item['平均价格']),
+        peakMonth: item['旺季'] || null,
+        top3ProductShare: parsePercent(item['销量前3的产品月销量占比']),
+        top3BrandShare: parsePercent(item['销量前3的品牌月销量占比']),
+        top3SellerShare: parsePercent(item['销量前3的卖家月销量占比']),
+        newProductShare: parsePercent(item['上线3个月内的新品销量占比']),
+        chineseSellerShare: parsePercent(item['中国卖家占比']),
+        amazonOwnedShare: parsePercent(item['亚马逊自营月销量占比']),
+      }))
+    : [];
+}
+
+function parseTikTokCategoryNameSearch(text) {
+  const items = safeJsonParse(text, []);
+  return Array.isArray(items)
+    ? items.map((item) => ({
+        nodeId: item.nodeid || null,
+        name: item['类目名称'] || null,
+      }))
+    : [];
+}
+
+function parseTikTokCategoryReport(text) {
+  const payload = safeJsonParse(text, {});
+  return {
+    name: payload['类目名称'] || null,
+    monthlySales: toNumber(payload['月销量']),
+    monthlySalesMoM: toNumber(payload['月销量环比']),
+    averagePrice: toNumber(payload['平均价格']),
+    medianPrice: toNumber(payload['中位数价格']),
+    averageReviews: toNumber(payload['平均评价数']),
+    averageRating: toNumber(payload['平均星级']),
+    sellerCount: toNumber(payload['Top300产品来源店铺数']),
+    top10ProductShare: toNumber(payload['Top10产品月销量占比']),
+    top10SellerShare: toNumber(payload['Top10卖家月销量占比']),
+    newProductCount: toNumber(payload['上线3个月内新品数量']),
+    newProductSales: toNumber(payload['上线3个月内新品月销量和']),
+    newProductAveragePrice: toNumber(payload['上线3个月内新品平均价格']),
+    newProductShare: toNumber(payload['上线3个月内新品月销量占比']),
+  };
+}
+
+function parseTikTokSimilarProducts(text) {
+  const items = safeJsonParse(text, []);
+  return Array.isArray(items)
+    ? items.map((item) => ({
+        productId: item.ProductId || null,
+        title: item.Title || '',
+        brand: item['品牌'] || '',
+        weeklySales: toNumber(item['周销量']),
+        monthlySales: toNumber(item['月销量']),
+        price: toNumber(item['价格']),
+        seller: item['卖家'] || '',
+        rating: toNumber(item['星级']),
+        reviewCount: toNumber(item['评论数量']),
+      }))
+    : [];
 }
 
 function parsePosition(positionText) {
@@ -865,6 +1040,10 @@ async function fetchProductDataset(asin, site) {
       callSorftimeTool('competitor_product_keywords', { asin, keywordSupportSite: site, page: 1 }),
     ]);
 
+  if (isMissingProductDetailText(detailTool.text)) {
+    throw new Error(`${asin} 在 ${getAmazonMarketplaceLabel(site)} 没有查到稳定商品数据，请更换站点或使用默认分析。`);
+  }
+
   return {
     detail: parseProductDetail(detailTool.text, asin),
     positiveReviews: parseReviewList(positiveReviewsTool.text),
@@ -882,10 +1061,130 @@ async function fetchCandidateSignal(asin, site) {
     callSorftimeTool('competitor_product_keywords', { asin, keywordSupportSite: site, page: 1 }),
   ]);
 
+  if (isMissingProductDetailText(detailTool.text)) {
+    return null;
+  }
+
   return {
     detail: parseProductDetail(detailTool.text, asin),
     trafficTerms: parseTrafficTerms(trafficTool.text),
     competitorKeywords: parseCompetitorKeywords(competitorKeywordsTool.text),
+  };
+}
+
+function deriveSpaceSearchName(seedDataset, rawQuery, inputType) {
+  if (inputType === 'keyword') {
+    return rawQuery;
+  }
+
+  return (
+    seedDataset?.detail?.subCategoryName ||
+    seedDataset?.detail?.category ||
+    seedDataset?.trafficTerms?.[0]?.keyword ||
+    seedDataset?.detail?.title?.split(',')[0] ||
+    rawQuery
+  );
+}
+
+function pickAmazonSitesForSpace(primarySite) {
+  return [...new Set([resolveAmazonSite(primarySite), ...SPACE_AMAZON_SCAN_SITES])].slice(0, 4);
+}
+
+async function fetchAmazonCategorySnapshot(productName, site) {
+  const searchTool = await callSorftimeTool('category_search_from_product_name', {
+    productName,
+    amzSite: site,
+    page: 1,
+  });
+  const results = parseCategorySearchResults(searchTool.text);
+  return results[0] || null;
+}
+
+async function fetchTikTokPlatformSignal(searchName, site) {
+  const categorySearchTool = await callSorftimeTool('tiktok_category_name_search', {
+    searchName,
+    site,
+  });
+  const categories = parseTikTokCategoryNameSearch(categorySearchTool.text);
+
+  if (categories[0]?.nodeId) {
+    const reportTool = await callSorftimeTool('tiktok_category_report', {
+      nodeId: categories[0].nodeId,
+      site,
+    });
+
+    return {
+      platform: 'TikTok',
+      site,
+      type: 'category',
+      confidence: 'decision-grade',
+      category: categories[0],
+      stats: parseTikTokCategoryReport(reportTool.text),
+    };
+  }
+
+  const similarTool = await callSorftimeTool('tiktok_similar_product', {
+    searchName,
+    site,
+    page: 1,
+  });
+  const products = parseTikTokSimilarProducts(similarTool.text);
+  if (!products.length) {
+    return null;
+  }
+
+  const monthlySales = products.reduce((sum, item) => sum + (item.monthlySales || 0), 0);
+  const prices = products.map((item) => item.price).filter((value) => value !== null && value !== undefined);
+  const sellers = new Set(products.map((item) => item.seller).filter(Boolean));
+
+  return {
+    platform: 'TikTok',
+    site,
+    type: 'similar-product',
+    confidence: 'directional',
+    category: { nodeId: null, name: searchName },
+    stats: {
+      name: searchName,
+      monthlySales,
+      monthlySalesMoM: null,
+      averagePrice: averageOf(prices, (value) => value),
+      medianPrice: buildPriceBand(prices.map((price) => ({ price })))?.median ?? null,
+      averageReviews: averageOf(products, (item) => item.reviewCount),
+      averageRating: averageOf(products, (item) => item.rating),
+      sellerCount: sellers.size,
+      top10ProductShare: null,
+      top10SellerShare: null,
+      newProductCount: null,
+      newProductSales: null,
+      newProductAveragePrice: null,
+      newProductShare: null,
+    },
+    products,
+  };
+}
+
+async function fetchWalmartKeywordSignal(searchName) {
+  const detailTool = await callSorftimeTool('walmart_keyword_detail', {
+    keyword: searchName,
+  });
+  const detail = safeJsonParse(detailTool.text, {});
+  if (!detail?.Keyword) {
+    return null;
+  }
+
+  return {
+    platform: 'Walmart',
+    site: 'US',
+    confidence: 'directional',
+    keyword: detail.Keyword,
+    keywordCnName: detail.KeywordCNName || null,
+    searchVolume: toNumber(detail.SearchVolume),
+    productCount: toNumber(detail.ProductCount),
+    averagePrice: normalizeWalmartPrice(toNumber(detail.SearchFirstPageAvgPrice)),
+    averageReviews: toNumber(detail.SearchFirstPageAvgReviews),
+    averageRating: toNumber(detail.SearchFirstPageAvgStar),
+    rank: toNumber(detail.Rank),
+    image: Array.isArray(detail.Images) ? detail.Images[0] : null,
   };
 }
 
@@ -1068,6 +1367,26 @@ function formatRank(detail) {
   return '未知';
 }
 
+function buildPlaceholderImage(label) {
+  const safeLabel = String(label || 'Market').slice(0, 24);
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
+      <defs>
+        <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
+          <stop offset="0%" stop-color="#eff6ff"/>
+          <stop offset="100%" stop-color="#dbeafe"/>
+        </linearGradient>
+      </defs>
+      <rect width="400" height="400" rx="36" fill="url(#g)"/>
+      <circle cx="310" cy="90" r="72" fill="#bfdbfe" opacity="0.55"/>
+      <circle cx="95" cy="300" r="84" fill="#93c5fd" opacity="0.32"/>
+      <text x="40" y="210" font-family="Arial, sans-serif" font-size="36" font-weight="700" fill="#1e3a8a">${safeLabel}</text>
+    </svg>
+  `.trim();
+
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
 function buildProductCard(detail, positiveThemes) {
   return {
     asin: detail.asin,
@@ -1099,6 +1418,27 @@ function buildProductCard(detail, positiveThemes) {
         sub: `FBA: ${formatCurrency(detail.fbaFee)}`,
       },
     ],
+  };
+}
+
+function buildMarketSummaryCard({
+  title,
+  brand,
+  seller,
+  rank,
+  description,
+  image,
+  metrics,
+}) {
+  return {
+    asin: title,
+    title,
+    brand,
+    seller,
+    rank,
+    description,
+    image: image || buildPlaceholderImage(title),
+    metrics,
   };
 }
 
@@ -1862,7 +2202,8 @@ function buildCompareSummary(left, right, categoryStats, keywordSets, keywordInt
     ? `再看类目：两者都在 ${categoryStats.name}，中位价约 ${formatCurrency(categoryStats.medianPrice)}，Top10 平均月销约 ${formatNumber(Math.round(categoryStats.top10AverageSales || 0))}，高评论产品吃走了 ${formatPercent(categoryStats.highReviewsShare)} 的销量。`
     : '再看类目：当前类目样本还不够完整。';
   const trendLine =
-    snapshot.leftTrend?.delta !== null && snapshot.rightTrend?.delta !== null
+    snapshot.leftTrend?.delta !== null && snapshot.leftTrend?.delta !== undefined &&
+    snapshot.rightTrend?.delta !== null && snapshot.rightTrend?.delta !== undefined
       ? `最近走势上，${left.detail.brand || left.detail.asin} 近 12 期约 ${formatSignedPercent(snapshot.leftTrend.delta)}，${right.detail.brand || right.detail.asin} 近 12 期约 ${formatSignedPercent(snapshot.rightTrend.delta)}。`
       : '最近走势上，当前趋势样本还不够完整。';
   const barrierLine = topKeyword?.pageOneStats
@@ -1894,7 +2235,7 @@ function buildCompareHeroCards(left, right, categoryStats, keywordSets) {
       value: other.detail.brand || other.detail.asin,
       desc:
         scenarioKeyword
-          ? `${other.detail.brand || other.detail.asin} 体量没赢，但${otherTrend?.delta !== null ? `最近还在涨，` : ''}${scenarioKeyword} 这类词上还有切入机会。`
+          ? `${other.detail.brand || other.detail.asin} 体量没赢，但${otherTrend?.delta !== null && otherTrend?.delta !== undefined ? `最近还在涨，` : ''}${scenarioKeyword} 这类词上还有切入机会。`
           : `${other.detail.brand || other.detail.asin} 更适合拿来拆词路、页面和进攻方式。`,
     },
     {
@@ -2001,7 +2342,8 @@ function buildCompareComparisonRows(left, right, genericKeywordPair, keywordInte
       val2: rightTrend ? `${formatNumber(rightTrend.first)} -> ${formatNumber(rightTrend.last)} (${formatSignedPercent(rightTrend.delta)})` : '样本不足',
       desc: '只看单月容易误判，这里主要看它是在稳着卖、往下掉，还是还在往上冲。',
       highlight:
-        leftTrend?.delta !== null && rightTrend?.delta !== null
+        leftTrend?.delta !== null && leftTrend?.delta !== undefined &&
+        rightTrend?.delta !== null && rightTrend?.delta !== undefined
           ? compareByBetter({ detail: { delta: leftTrend.delta } }, { detail: { delta: rightTrend.delta } }, (dataset) => dataset.detail.delta)
           : undefined,
     },
@@ -3008,6 +3350,7 @@ function scoreCompetitorCandidates(seedDataset, candidateSignals) {
   const seedPrice = seedDataset.detail.price || 0;
 
   return candidateSignals
+    .filter((signal) => signal?.detail?.title)
     .map((signal) => {
       const candidateKeywordSet = buildKeywordTermSet(signal);
       const sharedKeywordTerms = [...seedKeywordSet].filter((keyword) => candidateKeywordSet.has(keyword));
@@ -3063,16 +3406,658 @@ async function findCompetitorCandidates(seedDataset, categoryReport, site) {
   return scoreCompetitorCandidates(seedDataset, candidateSignals);
 }
 
-function buildBaseReportMeta(mode) {
+function buildAmazonSpaceSignal(site, snapshot) {
+  return snapshot
+    ? {
+        platform: 'Amazon',
+        site,
+        confidence: 'decision-grade',
+        marketName: snapshot.name,
+        demand: snapshot.top100Sales,
+        revenue: snapshot.top100Revenue,
+        averagePrice: snapshot.averagePrice,
+        averageReviews: snapshot.averageReviews,
+        averageRating: snapshot.averageRating,
+        concentration: snapshot.top3ProductShare,
+        sellerConcentration: snapshot.top3SellerShare,
+        newProductShare: snapshot.newProductShare,
+        amazonOwnedShare: snapshot.amazonOwnedShare,
+        chineseSellerShare: snapshot.chineseSellerShare,
+        peakMonth: snapshot.peakMonth,
+      }
+    : null;
+}
+
+function buildPrimaryAmazonSpaceSignal(site, stats) {
+  return stats?.name
+    ? {
+        platform: 'Amazon',
+        site,
+        confidence: 'decision-grade',
+        marketName: stats.name,
+        demand: stats.top100Sales,
+        revenue: stats.top100Revenue,
+        averagePrice: stats.medianPrice || stats.averagePrice,
+        averageReviews: stats.top10AverageReviews,
+        averageRating: stats.top10AverageRating,
+        concentration: stats.top3ProductShare,
+        sellerConcentration: stats.top3SellerShare,
+        newProductShare: stats.newProductShare,
+        amazonOwnedShare: stats.amazonOwnedShare,
+        chineseSellerShare: null,
+        peakMonth: null,
+      }
+    : null;
+}
+
+function buildTikTokSpaceSignal(signal) {
+  if (!signal?.stats?.name) {
+    return null;
+  }
+
+  return {
+    platform: 'TikTok',
+    site: signal.site,
+    confidence: signal.confidence,
+    marketName: signal.stats.name,
+    demand: signal.stats.monthlySales,
+    revenue: null,
+    averagePrice: signal.stats.medianPrice || signal.stats.averagePrice,
+    averageReviews: signal.stats.averageReviews,
+    averageRating: signal.stats.averageRating,
+    concentration: signal.stats.top10ProductShare,
+    sellerConcentration: signal.stats.top10SellerShare,
+    newProductShare: signal.stats.newProductShare,
+    amazonOwnedShare: null,
+    chineseSellerShare: null,
+    peakMonth: null,
+  };
+}
+
+function buildWalmartSpaceSignal(signal) {
+  return signal
+    ? {
+        platform: 'Walmart',
+        site: signal.site,
+        confidence: signal.confidence,
+        marketName: signal.keyword,
+        demand: signal.searchVolume,
+        revenue: null,
+        averagePrice: signal.averagePrice,
+        averageReviews: signal.averageReviews,
+        averageRating: signal.averageRating,
+        concentration: null,
+        sellerConcentration: null,
+        newProductShare: null,
+        amazonOwnedShare: null,
+        chineseSellerShare: null,
+        peakMonth: null,
+      }
+    : null;
+}
+
+function buildSpacePlatformLabel(signal) {
+  return signal.platform === 'Walmart'
+    ? 'Walmart US'
+    : `${signal.platform} ${signal.site}`;
+}
+
+function scoreSpaceSignal(signal) {
+  if (!signal) {
+    return -999;
+  }
+
+  let score = 0;
+
+  if (signal.platform === 'Amazon') {
+    score += Math.min((signal.demand || 0) / 25000, 14);
+    score += Math.min((signal.newProductShare || 0) / 1.5, 4);
+    score -= Math.min((signal.concentration || 0) / 12, 4);
+    score -= Math.min((signal.amazonOwnedShare || 0) / 15, 4);
+    score -= Math.min((signal.averageReviews || 0) / 5000, 2.5);
+  } else if (signal.platform === 'TikTok') {
+    score += Math.min((signal.demand || 0) / 1200, 12);
+    score += Math.min((signal.newProductShare || 0) / 2, 4);
+    score -= Math.min((signal.concentration || 0) / 18, 4);
+    score -= Math.min((signal.averageReviews || 0) / 2500, 2);
+  } else if (signal.platform === 'Walmart') {
+    score += Math.min((signal.demand || 0) / 15000, 10);
+    score -= Math.min((signal.averageReviews || 0) / 2500, 2);
+  }
+
+  if (signal.confidence === 'directional') {
+    score -= 1;
+  }
+
+  return Number(score.toFixed(2));
+}
+
+function getSpaceDecisionLabel(signal) {
+  if ((signal.score || 0) >= 10) {
+    return '建议优先准入';
+  }
+  if ((signal.score || 0) >= 6) {
+    return '建议小批验证';
+  }
+  if ((signal.score || 0) >= 3) {
+    return '先做 watchlist';
+  }
+  return '当前不建议优先投入';
+}
+
+function buildSpaceReasonLines(signal) {
+  const reasons = [];
+
+  if (signal.demand) {
+    reasons.push(
+      signal.platform === 'Walmart'
+        ? `关键词月需求约 ${formatNumber(signal.demand)}`
+        : `当前市场月需求约 ${formatNumber(signal.demand)}`,
+    );
+  }
+
+  if (signal.averagePrice) {
+    reasons.push(`主流价格带约 ${formatSignalPrice(signal, signal.averagePrice)}`);
+  }
+
+  if (signal.newProductShare !== null && signal.newProductShare !== undefined) {
+    reasons.push(`新品切入占比约 ${formatPercent(signal.newProductShare)}`);
+  }
+
+  if (signal.concentration !== null && signal.concentration !== undefined) {
+    reasons.push(`头部集中度约 ${formatPercent(signal.concentration)}`);
+  }
+
+  if (signal.amazonOwnedShare !== null && signal.amazonOwnedShare !== undefined) {
+    reasons.push(`平台自营占比约 ${formatPercent(signal.amazonOwnedShare)}`);
+  }
+
+  return reasons.slice(0, 4);
+}
+
+function summarizeSpaceSignals(signals) {
+  return signals
+    .filter(Boolean)
+    .map((signal) => ({
+      ...signal,
+      score: scoreSpaceSignal(signal),
+      decision: getSpaceDecisionLabel({ ...signal, score: scoreSpaceSignal(signal) }),
+      reasonLines: buildSpaceReasonLines(signal),
+    }))
+    .sort((left, right) => right.score - left.score);
+}
+
+async function collectSpaceSignals({ primarySite, searchName, primaryCategoryStats }) {
+  const amazonSites = pickAmazonSitesForSpace(primarySite);
+  const amazonSnapshots = await Promise.all(
+    amazonSites.map(async (site) => {
+      if (site === resolveAmazonSite(primarySite) && primaryCategoryStats?.name) {
+        return buildPrimaryAmazonSpaceSignal(site, primaryCategoryStats);
+      }
+
+      const snapshot = await fetchAmazonCategorySnapshot(searchName, site);
+      return buildAmazonSpaceSignal(site, snapshot);
+    }),
+  );
+
+  const tiktokSnapshots = await Promise.all(
+    SPACE_TIKTOK_SCAN_SITES.map((site) => fetchTikTokPlatformSignal(searchName, site)),
+  );
+
+  const walmartSnapshot = await fetchWalmartKeywordSignal(searchName);
+  const scoredSignals = summarizeSpaceSignals([
+    ...amazonSnapshots.filter(Boolean),
+    ...tiktokSnapshots.map((item) => buildTikTokSpaceSignal(item)).filter(Boolean),
+    buildWalmartSpaceSignal(walmartSnapshot),
+  ]);
+
+  return {
+    searchName,
+    signals: scoredSignals,
+    amazonSignals: scoredSignals.filter((item) => item.platform === 'Amazon'),
+    tiktokSignals: scoredSignals.filter((item) => item.platform === 'TikTok'),
+    walmartSignal: scoredSignals.find((item) => item.platform === 'Walmart') || null,
+    primarySignal: scoredSignals.find((item) => item.platform === 'Amazon' && item.site === resolveAmazonSite(primarySite)) || scoredSignals[0] || null,
+    topOpportunity: scoredSignals[0] || null,
+  };
+}
+
+function buildBaseReportMeta(mode, marketplace = 'Amazon US', source = 'Sorftime MCP') {
   return {
     date: new Date().toISOString().slice(0, 10),
-    marketplace: 'Amazon US',
-    source: 'Sorftime MCP',
+    marketplace,
+    source,
     mode,
   };
 }
 
-function buildCompareModeReport({ session, left, right, categoryReport, keywordIntel, extraNote }) {
+function buildSpaceSeedCard(seedDataset, session, searchName, site) {
+  if (seedDataset) {
+    return buildProductCard(seedDataset.detail, summarizeReviewThemes(seedDataset.positiveReviews));
+  }
+
+  return buildMarketSummaryCard({
+    title: session.rawQuery,
+    brand: '关键词输入',
+    seller: getAmazonMarketplaceLabel(site),
+    rank: '多平台扫描',
+    description: `当前以“${searchName}”作为品类基准词，后面会同时拉 Amazon 多站点、TikTok 和 Walmart 的机会信号。`,
+    image: buildPlaceholderImage(searchName),
+    metrics: [
+      { label: 'Input', value: 'Keyword', sub: session.rawQuery },
+      { label: 'Primary Site', value: getAmazonMarketplaceLabel(site), sub: '默认作为 Amazon 基准站点' },
+      { label: 'Search Seed', value: searchName, sub: '后续跨平台统一使用这个品类词' },
+      { label: 'Coverage', value: 'Amazon / TikTok / Walmart', sub: '多平台机会判断' },
+    ],
+  });
+}
+
+function buildSpaceOpportunityCard(topOpportunity) {
+  return buildMarketSummaryCard({
+    title: `${buildSpacePlatformLabel(topOpportunity)} / ${topOpportunity.marketName || 'Opportunity'}`,
+    brand: topOpportunity.platform,
+    seller: topOpportunity.decision,
+    rank: `机会分 ${topOpportunity.score}`,
+    description: `这不是“流量最大就上”，而是综合了需求、集中度、新品窗口和平台门槛后，当前最值得先验证的一站。`,
+    image: buildPlaceholderImage(buildSpacePlatformLabel(topOpportunity)),
+    metrics: [
+      { label: 'Demand', value: formatNumber(topOpportunity.demand), sub: topOpportunity.platform === 'Walmart' ? 'Keyword demand' : 'Market monthly demand' },
+      { label: 'Price', value: formatSignalPrice(topOpportunity, topOpportunity.averagePrice), sub: topOpportunity.marketName || '主流价格带' },
+      { label: 'Barrier', value: topOpportunity.concentration !== null && topOpportunity.concentration !== undefined ? formatPercent(topOpportunity.concentration) : '方向性', sub: '头部集中度 / 平台门槛' },
+      { label: 'Entry', value: topOpportunity.decision, sub: `${topOpportunity.confidence} evidence` },
+    ],
+  });
+}
+
+function buildSpaceModeFocus(primarySignal, topOpportunity) {
+  return {
+    title: '准入判断',
+    cards: [
+      {
+        label: '当前基准站',
+        value: primarySignal ? buildSpacePlatformLabel(primarySignal) : '基准站不足',
+        desc: primarySignal ? `${primarySignal.marketName || '当前市场'} 是这次的基准盘。` : '当前没有拿到足够稳定的基准站数据。',
+      },
+      {
+        label: '首选机会',
+        value: topOpportunity ? buildSpacePlatformLabel(topOpportunity) : '机会不足',
+        desc: topOpportunity ? `${topOpportunity.decision}，当前优先级最高。` : '当前还没有足够清晰的跨平台机会。 ',
+      },
+      {
+        label: '建议动作',
+        value: topOpportunity ? topOpportunity.decision : '先补数据',
+        desc: topOpportunity
+          ? '先去最值得进的一站做小批验证，不要所有平台一起上。'
+          : '当前先补关键词和类目证据，再决定是否投入。',
+      },
+    ],
+  };
+}
+
+function buildSpaceCandidatePoolCards(spaceIntel) {
+  const cards = spaceIntel.signals.slice(0, 3).map((signal, index) => ({
+    eyebrow: `机会平台 ${index + 1}`,
+    title: `${buildSpacePlatformLabel(signal)} / ${signal.marketName || 'Market'}`,
+    summary: `${signal.decision}。${signal.reasonLines[0] || '当前这站有值得进一步验证的空间。'} `,
+    points: [
+      `机会分 ${signal.score}`,
+      ...signal.reasonLines,
+      `证据级别：${signal.confidence}`,
+    ],
+  }));
+
+  cards.push({
+    eyebrow: '判断逻辑',
+    title: '为什么不是只看流量最大的一站',
+    summary: '品类空间不是只看盘子大，还要看当前能不能进、值不值得进。',
+    points: [
+      '先看需求规模，再看新品窗口。',
+      '再看头部集中度和平台自营/强品牌门槛。',
+      '最后才判断是不是值得优先准入，而不是单纯追最大流量。',
+      'TikTok 和 Walmart 当前主要作为增量方向，不替代 Amazon 的类目基准判断。',
+    ],
+  });
+
+  return cards.slice(0, 4);
+}
+
+function buildSpaceComparisonRows(primarySignal, topOpportunity) {
+  return [
+    {
+      title: '当前需求规模',
+      val1: primarySignal ? formatNumber(primarySignal.demand) : '未知',
+      val2: topOpportunity ? formatNumber(topOpportunity.demand) : '未知',
+      desc: '先看市场是不是足够大，再看哪一站更值得先投入。',
+      highlight:
+        primarySignal && topOpportunity && (topOpportunity.demand || 0) > (primarySignal.demand || 0) ? 'right' : 'left',
+    },
+    {
+      title: '主流价格带',
+      val1: primarySignal ? formatSignalPrice(primarySignal, primarySignal.averagePrice) : '未知',
+      val2: topOpportunity ? formatSignalPrice(topOpportunity, topOpportunity.averagePrice) : '未知',
+      desc: '价格带决定了后面是走低价冲量，还是做结构化客单。',
+    },
+    {
+      title: '新品窗口',
+      val1: primarySignal?.newProductShare !== null && primarySignal?.newProductShare !== undefined ? formatPercent(primarySignal.newProductShare) : '方向性',
+      val2: topOpportunity?.newProductShare !== null && topOpportunity?.newProductShare !== undefined ? formatPercent(topOpportunity.newProductShare) : '方向性',
+      desc: '新品占比越高，说明新进入者至少还有窗口，不是完全被头部锁死。',
+      highlight:
+        primarySignal && topOpportunity && (topOpportunity.newProductShare || 0) > (primarySignal.newProductShare || 0) ? 'right' : 'left',
+    },
+    {
+      title: '集中度 / 门槛',
+      val1: primarySignal?.concentration !== null && primarySignal?.concentration !== undefined ? formatPercent(primarySignal.concentration) : '方向性',
+      val2: topOpportunity?.concentration !== null && topOpportunity?.concentration !== undefined ? formatPercent(topOpportunity.concentration) : '方向性',
+      desc: '集中度越高，后面越不能简单复制跟卖。',
+      highlight:
+        primarySignal && topOpportunity && (topOpportunity.concentration || 999) < (primarySignal.concentration || 999) ? 'right' : 'left',
+    },
+    {
+      title: '机会分',
+      val1: primarySignal ? String(primarySignal.score) : '未知',
+      val2: topOpportunity ? String(topOpportunity.score) : '未知',
+      desc: '这是综合需求、集中度、新品窗口和平台门槛后的相对优先级，不是单一流量排名。',
+      highlight:
+        primarySignal && topOpportunity && (topOpportunity.score || 0) > (primarySignal.score || 0) ? 'right' : 'left',
+    },
+    {
+      title: '准入建议',
+      val1: primarySignal?.decision || '待判断',
+      val2: topOpportunity?.decision || '待判断',
+      desc: '最后落到执行上，核心是先去哪一站做验证，而不是所有平台同时铺开。',
+    },
+  ];
+}
+
+function buildSpaceCategoryCards(spaceIntel) {
+  const topAmazon = spaceIntel.amazonSignals[0];
+  const topTikTok = spaceIntel.tiktokSignals[0];
+  const walmart = spaceIntel.walmartSignal;
+
+  return [
+    {
+      label: 'Amazon 最优站点',
+      value: topAmazon ? buildSpacePlatformLabel(topAmazon) : '暂无',
+      desc: topAmazon ? `${topAmazon.marketName || '当前类目'}，${topAmazon.decision}。` : '当前还没有拿到足够清晰的 Amazon 站点机会。',
+    },
+    {
+      label: 'TikTok 增量站点',
+      value: topTikTok ? buildSpacePlatformLabel(topTikTok) : '暂无',
+      desc: topTikTok ? `${topTikTok.marketName || '当前类目'} 有增量信号，更适合做内容驱动验证。` : '当前 TikTok 侧暂时没有稳定类目信号。',
+    },
+    {
+      label: 'Walmart 方向性',
+      value: walmart?.demand ? formatNumber(walmart.demand) : '暂无',
+      desc: walmart ? `${walmart.marketName || '当前关键词'} 在 Walmart 上仍有方向性需求。` : '当前 Walmart 没有稳定关键词证据。',
+    },
+    {
+      label: '建议优先级',
+      value: spaceIntel.topOpportunity?.decision || '先补数据',
+      desc: '先去最值得进的一站验证，再决定要不要向其他站扩。 ',
+    },
+    {
+      label: '已覆盖平台',
+      value: `${formatNumber(spaceIntel.signals.length)} 个`,
+      desc: '当前已纳入 Amazon 多站点、TikTok 多站点和 Walmart 的可用证据。',
+    },
+    {
+      label: '最大阻力',
+      value: spaceIntel.primarySignal?.concentration !== null && spaceIntel.primarySignal?.concentration !== undefined ? formatPercent(spaceIntel.primarySignal.concentration) : '集中度待确认',
+      desc: '如果头部集中度高，后面更依赖差异化和执行，而不是简单准入。',
+    },
+  ];
+}
+
+function buildSpaceCategoryRows(primarySignal, topOpportunity) {
+  return buildSpaceComparisonRows(primarySignal, topOpportunity);
+}
+
+function buildSpaceTrafficColumns(spaceIntel, keywordIntel, searchName) {
+  const topKeyword = keywordIntel[0]?.detail;
+  const topAmazon = spaceIntel.amazonSignals.slice(0, 3).map((signal) => `${buildSpacePlatformLabel(signal)}: ${signal.decision}`);
+  const topTikTok = spaceIntel.tiktokSignals.slice(0, 2).map((signal) => `${buildSpacePlatformLabel(signal)}: ${signal.decision}`);
+
+  return [
+    {
+      eyebrow: '输入基准',
+      title: '这次跨平台用什么词扫',
+      points: [searchName, ...(topKeyword?.keyword ? [`Amazon 核心词：${topKeyword.keyword}`] : [])],
+    },
+    {
+      eyebrow: 'Amazon 多站点',
+      title: topAmazon.length ? '先看哪些 Amazon 站点有机会' : 'Amazon 站点信号不足',
+      accent: true,
+      points: topAmazon.length ? topAmazon : ['当前 Amazon 多站点还没有足够稳定的机会排序。'],
+    },
+    {
+      eyebrow: 'TikTok / Walmart',
+      title: topTikTok.length || spaceIntel.walmartSignal ? '这些平台更像增量方向' : '当前增量平台信号不足',
+      points: [
+        ...(topTikTok.length ? topTikTok : ['TikTok 当前没有稳定类目信号。']),
+        ...(spaceIntel.walmartSignal ? [`Walmart US: ${spaceIntel.walmartSignal.decision}`] : ['Walmart 当前没有稳定关键词信号。']),
+      ],
+    },
+    {
+      eyebrow: '关键词门槛',
+      title: topKeyword ? '先确认最大需求词和竞争门槛' : '关键词细节样本不足',
+      points: topKeyword
+        ? [
+            `${topKeyword.keyword}: 月搜 ${formatNumber(topKeyword.monthlyVolume)}`,
+            `CPC ${formatCurrency(topKeyword.cpc)}`,
+            `结果数 ${formatNumber(topKeyword.resultCount)}`,
+          ]
+        : ['当前还没有足够稳定的关键词细节样本。'],
+    },
+  ];
+}
+
+function buildSpaceTrafficInsight(spaceIntel, primarySignal) {
+  const topOpportunity = spaceIntel.topOpportunity;
+  return [
+    primarySignal
+      ? `当前先拿 ${buildSpacePlatformLabel(primarySignal)} 当基准盘。`
+      : '当前还没有稳定的基准盘。',
+    topOpportunity
+      ? `综合下来，${buildSpacePlatformLabel(topOpportunity)} 是当前更值得先验证的一站。`
+      : '综合下来，当前还没有足够清晰的第一优先站点。',
+    'TikTok 和 Walmart 这里更多是看增量方向，不直接替代 Amazon 的类目准入判断。',
+  ].join(' ');
+}
+
+function buildSpaceReviewBlocks(seedDataset, primarySignal, topOpportunity, searchName) {
+  const positives = seedDataset
+    ? summarizeReviewThemes(seedDataset.positiveReviews).map((theme) => theme.label)
+    : ['当前以品类词判断，不直接落到单个 ASIN 好评。'];
+  const negatives = seedDataset
+    ? summarizeReviewThemes(seedDataset.negativeReviews).map((theme) => theme.label)
+    : ['当前以品类词判断，不直接落到单个 ASIN 差评。'];
+
+  return [
+    {
+      eyebrow: '当前基准',
+      title: primarySignal ? `${buildSpacePlatformLabel(primarySignal)} / ${primarySignal.marketName || searchName}` : searchName,
+      summary: '这一块主要解释当前基准市场为什么还能看、哪里是进入门槛。',
+      positives: [
+        primarySignal?.demand ? `需求规模约 ${formatNumber(primarySignal.demand)}` : '需求规模待确认',
+        primarySignal?.newProductShare !== null && primarySignal?.newProductShare !== undefined ? `新品窗口约 ${formatPercent(primarySignal.newProductShare)}` : '新品窗口方向性判断',
+        ...positives.slice(0, 2),
+      ],
+      negatives: [
+        primarySignal?.concentration !== null && primarySignal?.concentration !== undefined ? `头部集中度约 ${formatPercent(primarySignal.concentration)}` : '集中度待确认',
+        primarySignal?.amazonOwnedShare !== null && primarySignal?.amazonOwnedShare !== undefined ? `平台自营占比约 ${formatPercent(primarySignal.amazonOwnedShare)}` : '平台门槛待确认',
+        ...negatives.slice(0, 2),
+      ],
+      opportunities: [
+        '当前基准盘的价值，不是直接上，而是先拿它定义进入门槛和目标价格带。',
+        '如果基准盘门槛已经很高，就不要把所有资源都压在当前站点。',
+      ],
+      evidence: seedDataset ? buildReviewEvidence([...summarizeReviewThemes(seedDataset.positiveReviews), ...summarizeReviewThemes(seedDataset.negativeReviews)]) : undefined,
+    },
+    {
+      eyebrow: '机会平台',
+      title: topOpportunity ? `${buildSpacePlatformLabel(topOpportunity)} / ${topOpportunity.marketName || searchName}` : '机会平台待确认',
+      summary: '这部分主要解释为什么它比其他平台/站点更值得先验证。',
+      positives: topOpportunity ? topOpportunity.reasonLines : ['当前没有足够稳定的机会平台信号。'],
+      negatives: [
+        '机会更大不等于一定更好做，仍然要看内容、价格带和执行资源。',
+        topOpportunity?.confidence === 'directional' ? '当前这站更多是方向性证据，建议先小批验证。' : '当前这站可以进入第一轮准入评估。',
+      ],
+      opportunities: [
+        '优先把预算和验证资源压在这一站，再决定要不要复制到第二站。',
+        '先跑小批验证，不要还没拿到证据就默认全平台铺开。',
+      ],
+    },
+  ];
+}
+
+function buildSpaceActionCards(spaceIntel, searchName) {
+  const topOpportunity = spaceIntel.topOpportunity;
+  const secondOpportunity = spaceIntel.signals[1];
+
+  return [
+    {
+      priority: 'P0',
+      title: topOpportunity ? `先验证 ${buildSpacePlatformLabel(topOpportunity)}` : '先补强机会证据',
+      desc: topOpportunity
+        ? `当前不要所有平台一起上，先拿 ${buildSpacePlatformLabel(topOpportunity)} 做第一轮准入验证。`
+        : '当前先补 Amazon 多站点和关键词证据，再谈大范围准入。',
+      accentClass: 'border-t-red-500',
+    },
+    {
+      priority: 'P1',
+      title: `围绕 ${searchName} 固定类目口径`,
+      desc: '后面所有站点判断都要围绕同一个品类定义，不要 Amazon 看的是一类货，TikTok 看的是另一类货。',
+      accentClass: 'border-t-orange-400',
+    },
+    {
+      priority: 'P1',
+      title: secondOpportunity ? `把 ${buildSpacePlatformLabel(secondOpportunity)} 放进第二观察位` : '保留第二观察位',
+      desc: secondOpportunity
+        ? '不要只盯第一优先站点。保留第二观察位，避免把阶段性热点误当成长期机会。'
+        : '当前还缺一个足够强的第二观察位，后续要继续补。',
+      accentClass: 'border-t-blue-500',
+    },
+    {
+      priority: 'P2',
+      title: '准入前先写 kill criteria',
+      desc: '把需求门槛、平台门槛、价格带和验证周期先写清楚，避免因为“看起来有机会”就直接投资源。',
+      accentClass: 'border-t-emerald-500',
+    },
+  ];
+}
+
+function buildSpaceRoadmapSteps(spaceIntel, searchName) {
+  const topOpportunity = spaceIntel.topOpportunity;
+  const secondOpportunity = spaceIntel.signals[1];
+
+  return [
+    {
+      phase: 'Step 1',
+      title: '固定品类定义和核心词',
+      desc: `先围绕 ${searchName} 固定类目口径，明确后面各个平台看的是同一类机会。`,
+    },
+    {
+      phase: 'Step 2',
+      title: topOpportunity ? `先做 ${buildSpacePlatformLabel(topOpportunity)} 准入验证` : '先补强第一优先站点',
+      desc: topOpportunity
+        ? `先看 ${buildSpacePlatformLabel(topOpportunity)} 的准入门槛、客单和执行难度。`
+        : '当前还没有足够稳定的第一优先站点，先补数据再决定。',
+    },
+    {
+      phase: 'Step 3',
+      title: secondOpportunity ? `把 ${buildSpacePlatformLabel(secondOpportunity)} 放进 watchlist` : '建立第二观察位',
+      desc: secondOpportunity
+        ? '如果第一站验证成立，再看第二站是否值得复制，而不是一开始就多线并行。'
+        : '继续补一个第二观察位，避免机会判断过度依赖单一平台。',
+    },
+    {
+      phase: 'Step 4',
+      title: '最后再进产品和供应链评估',
+      desc: '只有当准入判断成立之后，才进入更细的竞品、差异化和寻源动作，不要顺序倒过来。',
+    },
+  ];
+}
+
+function buildSpaceModeReport({ session, site, seedDataset, categoryReport, keywordIntel, spaceIntel, searchName }) {
+  const primarySignal = spaceIntel.primarySignal;
+  const topOpportunity = spaceIntel.topOpportunity;
+  const modeFocus = buildSpaceModeFocus(primarySignal, topOpportunity);
+
+  if (!topOpportunity) {
+    throw new Error('当前没有拿到足够稳定的品类空间信号，请更换 ASIN、关键词或站点后重试。');
+  }
+
+  return {
+    session,
+    report: {
+      meta: buildBaseReportMeta('space', `${getAmazonMarketplaceLabel(site)} baseline / Multi-platform`, 'Sorftime MCP'),
+      title: `${searchName} 当前更适合先去 ${buildSpacePlatformLabel(topOpportunity)}，${topOpportunity.decision}。`,
+      summary: [
+        seedDataset
+          ? `这次以 ${seedDataset.detail.brand || seedDataset.detail.asin} 为基准，往外看这个品类在各平台和站点的空间。`
+          : `这次以“${session.rawQuery}”为品类词，往外看这个品类在各平台和站点的空间。`,
+        primarySignal
+          ? `当前基准盘先看 ${buildSpacePlatformLabel(primarySignal)}，${primarySignal.marketName || searchName} 的需求规模约 ${formatNumber(primarySignal.demand)}。`
+          : '当前基准盘样本不足。',
+        `综合 Amazon 多站点、TikTok 和 Walmart 的可用证据，${buildSpacePlatformLabel(topOpportunity)} 当前优先级最高。`,
+        topOpportunity.reasonLines.join('，'),
+        '建议不要多平台同时铺开，先做第一优先站点的准入验证，再决定是否扩到第二站。',
+      ].join(' '),
+      labels: {
+        left: primarySignal ? buildSpacePlatformLabel(primarySignal) : '当前基准',
+        right: buildSpacePlatformLabel(topOpportunity),
+      },
+      sectionCopy: {
+        products: '这里不是双 ASIN 对比，而是把输入基准和当前第一优先机会放在一起看。',
+        modeFocus: '先回答这条品类应该去哪一站验证，而不是先讨论细节执行。',
+        candidates: '这里列的是当前更值得优先观察或准入的平台/站点，不是简单的平台罗列。',
+        comparison: '核心对比主要回答：当前基准站和第一机会站，到底差在哪。',
+        category: '这一块聚合多平台证据，帮助判断市场空间和准入门槛。',
+        traffic: '这里把跨站点和跨平台的需求信号摆在一起，避免只看单一市场。',
+        reviews: '这里不是纯评论分析，而是把支持准入和阻碍准入的证据拆开。',
+        actions: '执行建议默认围绕“先去哪一站验证”展开。',
+        roadmap: '准入判断的顺序应该是：固定口径，选优先站，留第二观察位，最后再下沉到产品动作。',
+      },
+      heroCards: [
+        {
+          label: '首选机会',
+          value: buildSpacePlatformLabel(topOpportunity),
+          desc: `${topOpportunity.decision}。${topOpportunity.reasonLines[0] || ''}`,
+        },
+        {
+          label: '当前基准',
+          value: primarySignal ? buildSpacePlatformLabel(primarySignal) : '基准盘不足',
+          desc: primarySignal ? `${primarySignal.marketName || searchName} 是这次的准入锚点。` : '当前没有稳定的基准站。 ',
+        },
+        {
+          label: '第二观察位',
+          value: spaceIntel.signals[1] ? buildSpacePlatformLabel(spaceIntel.signals[1]) : '待补',
+          desc: spaceIntel.signals[1] ? `${spaceIntel.signals[1].decision}，可以作为后续扩站的观察位。` : '当前第二观察位还不够强。 ',
+        },
+      ],
+      navItems: buildNavItems('space'),
+      modeFocusTitle: modeFocus.title,
+      modeFocusCards: modeFocus.cards,
+      candidatePoolTitle: '机会平台',
+      candidatePoolCards: buildSpaceCandidatePoolCards(spaceIntel),
+      products: [
+        buildSpaceSeedCard(seedDataset, session, searchName, site),
+        buildSpaceOpportunityCard(topOpportunity),
+      ],
+      comparisonRows: buildSpaceComparisonRows(primarySignal, topOpportunity),
+      categoryCards: buildSpaceCategoryCards(spaceIntel),
+      categoryRows: buildSpaceCategoryRows(primarySignal, topOpportunity),
+      trafficColumns: buildSpaceTrafficColumns(spaceIntel, keywordIntel, searchName),
+      trafficInsight: buildSpaceTrafficInsight(spaceIntel, primarySignal),
+      reviewBlocks: buildSpaceReviewBlocks(seedDataset, primarySignal, topOpportunity, searchName),
+      actionCards: buildSpaceActionCards(spaceIntel, searchName),
+      roadmapSteps: buildSpaceRoadmapSteps(spaceIntel, searchName),
+    },
+  };
+}
+
+function buildCompareModeReport({ session, site, left, right, categoryReport, keywordIntel, extraNote }) {
   const winnerState = chooseWinner(left, right);
   const keywordSets = chooseKeywordSets([left, right]);
   const genericKeywordPair = buildGenericKeywordPair(left, right, keywordSets);
@@ -3081,7 +4066,7 @@ function buildCompareModeReport({ session, left, right, categoryReport, keywordI
   return {
     session,
     report: {
-      meta: buildBaseReportMeta('compare'),
+      meta: buildBaseReportMeta('compare', getAmazonMarketplaceLabel(site)),
       title: buildCompareTitle(left, right, keywordSets),
       summary: [buildCompareSummary(left, right, categoryReport.stats, keywordSets, keywordIntel), extraNote].filter(Boolean).join(' '),
       labels: {
@@ -3109,7 +4094,7 @@ function buildCompareModeReport({ session, left, right, categoryReport, keywordI
   };
 }
 
-function buildFindModeReport({ session, left, right, categoryReport, keywordIntel, extraNote, competitorCandidates }) {
+function buildFindModeReport({ session, site, left, right, categoryReport, keywordIntel, extraNote, competitorCandidates }) {
   const keywordSets = chooseKeywordSets([left, right]);
   const genericKeywordPair = buildGenericKeywordPair(left, right, keywordSets);
   const modeFocus = buildFindModeFocus(left, right, competitorCandidates, keywordSets);
@@ -3117,7 +4102,7 @@ function buildFindModeReport({ session, left, right, categoryReport, keywordInte
   return {
     session,
     report: {
-      meta: buildBaseReportMeta('find'),
+      meta: buildBaseReportMeta('find', getAmazonMarketplaceLabel(site)),
       title: buildFindTitle(left, right),
       summary: buildFindSummary(left, right, categoryReport.stats, competitorCandidates, keywordIntel, extraNote),
       labels: {
@@ -3147,7 +4132,7 @@ function buildFindModeReport({ session, left, right, categoryReport, keywordInte
   };
 }
 
-function buildSourceModeReport({ session, left, right, categoryReport, keywordIntel, sourcing, extraNote, competitorCandidates }) {
+function buildSourceModeReport({ session, site, left, right, categoryReport, keywordIntel, sourcing, extraNote, competitorCandidates }) {
   const keywordSets = chooseKeywordSets([left, right]);
   const genericKeywordPair = buildGenericKeywordPair(left, right, keywordSets);
   const modeFocus = buildSourceModeFocus(left, right, categoryReport.stats, sourcing);
@@ -3155,7 +4140,7 @@ function buildSourceModeReport({ session, left, right, categoryReport, keywordIn
   return {
     session,
     report: {
-      meta: buildBaseReportMeta('source'),
+      meta: buildBaseReportMeta('source', getAmazonMarketplaceLabel(site)),
       title: buildSourceTitle(left, right, categoryReport.stats, sourcing),
       summary: buildSourceSummary(left, right, categoryReport.stats, keywordIntel, sourcing, extraNote),
       labels: {
@@ -3186,7 +4171,42 @@ function buildSourceModeReport({ session, left, right, categoryReport, keywordIn
 }
 
 export async function buildLiveReport(sessionInput) {
-  const site = 'US';
+  const site = resolveAmazonSite(sessionInput.site);
+
+  if (sessionInput.mode === 'space') {
+    const seedAsin = sessionInput.asins[0];
+    const inputType = sessionInput.inputType || (seedAsin ? 'asin' : 'keyword');
+    const seedDataset = seedAsin ? await fetchProductDataset(seedAsin, site) : null;
+    const categoryReportText = seedDataset?.detail?.nodeId
+      ? await callSorftimeTool('category_report', { nodeId: seedDataset.detail.nodeId, amzSite: site })
+      : null;
+    const categoryReport = categoryReportText ? parseCategoryReport(categoryReportText.text) : { topProducts: [], stats: {} };
+    const searchName = deriveSpaceSearchName(seedDataset, sessionInput.rawQuery || sessionInput.query, inputType);
+    const keywordSeeds = seedDataset
+      ? collectKeywordSeeds(chooseKeywordSets([seedDataset]))
+      : [searchName].filter(Boolean);
+    const keywordIntel = await fetchKeywordIntel(site, keywordSeeds);
+    const spaceIntel = await collectSpaceSignals({
+      primarySite: site,
+      searchName,
+      primaryCategoryStats: categoryReport.stats,
+    });
+
+    return buildSpaceModeReport({
+      session: {
+        ...sessionInput,
+        inputType,
+        query: seedDataset ? seedDataset.detail.asin || sessionInput.query : sessionInput.query,
+        asins: seedDataset ? [seedDataset.detail.asin] : [],
+      },
+      site,
+      seedDataset,
+      categoryReport,
+      keywordIntel,
+      spaceIntel,
+      searchName,
+    });
+  }
 
   if (sessionInput.mode === 'compare') {
     const usedAsins = sessionInput.asins.slice(0, 2);
@@ -3208,6 +4228,7 @@ export async function buildLiveReport(sessionInput) {
 
     return buildCompareModeReport({
       session: { ...sessionInput, asins: usedAsins, query: usedAsins.join(', ') },
+      site,
       left,
       right,
       categoryReport,
@@ -3236,6 +4257,7 @@ export async function buildLiveReport(sessionInput) {
   if (sessionInput.mode === 'find') {
     return buildFindModeReport({
       session: { ...sessionInput, asins: [seedAsin, competitor.detail.asin], query: `${seedAsin}, ${competitor.detail.asin}` },
+      site,
       left: seed,
       right: benchmark,
       categoryReport,
@@ -3250,6 +4272,7 @@ export async function buildLiveReport(sessionInput) {
 
   return buildSourceModeReport({
     session: { ...sessionInput, asins: [seedAsin, competitor.detail.asin], query: `${seedAsin}, ${competitor.detail.asin}` },
+    site,
     left: seed,
     right: benchmark,
     categoryReport,

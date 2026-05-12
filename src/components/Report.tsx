@@ -1,6 +1,7 @@
 import { motion } from 'motion/react';
 import { ArrowLeft } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { getSiteLabel } from '../lib/analysis';
 import type { AnalysisSession } from '../types/analysis';
 import type { CompetitiveReport, ReportCandidateCard, ReportComparisonRow, ReportHeroCard, ReportReviewBlock, ReportRoadmapStep } from '../types/report';
 
@@ -55,6 +56,16 @@ export default function Report({ onBack, session, report }: ReportProps) {
             </p>
 
             <div className="mb-6 flex flex-wrap gap-2">
+              {session.site !== 'AUTO' && (
+                <span className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                  Site: <strong className="text-slate-900">{getSiteLabel(session.site)}</strong>
+                </span>
+              )}
+              {session.asins.length === 0 && (
+                <span className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                  Query: <strong className="text-slate-900">{session.query}</strong>
+                </span>
+              )}
               {session.asins.map((asin) => (
                 <span key={asin} className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">
                   Input: <strong className="text-slate-900">{asin}</strong>

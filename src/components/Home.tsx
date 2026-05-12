@@ -1,8 +1,8 @@
 import { useState, type FormEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Search, ChevronRight, Target, BarChart2, PackageSearch } from 'lucide-react';
-import { buildAnalysisSession, parseAnalysisInput } from '../lib/analysis';
-import type { AnalysisSession, Mode } from '../types/analysis';
+import { Search, ChevronRight, Target, BarChart2, PackageSearch, Globe2 } from 'lucide-react';
+import { buildAnalysisSession, getModeExample, parseAnalysisInput, SITE_OPTIONS } from '../lib/analysis';
+import type { AnalysisSession, Mode, SiteSelection } from '../types/analysis';
 
 interface HomeProps {
   onAnalyze: (session: AnalysisSession) => void;
@@ -13,10 +13,12 @@ const modes = [
   { id: 'find' as const, label: '找竞对', icon: Target, placeholder: '输入 1 个 ASIN 或 Amazon 链接...' },
   { id: 'compare' as const, label: '竞对分析', icon: BarChart2, placeholder: '输入 2 个或多个 ASIN 进行对比...' },
   { id: 'source' as const, label: '去寻源', icon: PackageSearch, placeholder: '输入 1 个 ASIN 或 Amazon 链接...' },
+  { id: 'space' as const, label: '品类空间', icon: Globe2, placeholder: '输入 1 个 ASIN，或直接输入 hair dryer / 吹风机...' },
 ];
 
 export default function Home({ onAnalyze, serverError }: HomeProps) {
   const [mode, setMode] = useState<Mode>('compare');
+  const [site, setSite] = useState<SiteSelection>('AUTO');
   const [query, setQuery] = useState('');
   const [isFocused, setIsFocused] = useState(false);
   const currentMode = modes.find((item) => item.id === mode)!;
@@ -25,7 +27,7 @@ export default function Home({ onAnalyze, serverError }: HomeProps) {
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     if (parsed.isValid) {
-      onAnalyze(buildAnalysisSession(mode, query));
+      onAnalyze(buildAnalysisSession(mode, query, site));
     }
   };
 
@@ -60,7 +62,7 @@ export default function Home({ onAnalyze, serverError }: HomeProps) {
             </span>
           </h1>
           <p className="text-lg md:text-xl text-slate-500 font-medium max-w-xl mx-auto tracking-wide">
-            一次输入，直达结论。将竞对发现、差异分析与 1688 寻源收敛于统一入口。
+            一次输入，直达结论。将品类空间、竞对发现、差异分析与 1688 寻源收敛于统一入口。
           </p>
         </div>
 
@@ -94,6 +96,23 @@ export default function Home({ onAnalyze, serverError }: HomeProps) {
                 </button>
               );
             })}
+          </div>
+
+          <div className="mb-4 flex justify-center">
+            <label className="flex items-center gap-3 px-4 py-2 rounded-lg bg-white border border-slate-200 shadow-sm text-sm font-medium text-slate-600">
+              <span className="text-slate-400">国家站点</span>
+              <select
+                value={site}
+                onChange={(e) => setSite(e.target.value as SiteSelection)}
+                className="bg-transparent text-slate-900 outline-none pr-6"
+              >
+                {SITE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
 
           {/* Search Input Container */}
@@ -148,6 +167,7 @@ export default function Home({ onAnalyze, serverError }: HomeProps) {
             <p className={parsed.error || serverError ? 'text-amber-600' : 'text-slate-400'}>
               {parsed.error ?? serverError ?? parsed.helperText}
             </p>
+            <p className="mt-2 text-slate-400">{getModeExample(mode)}</p>
             <p className="mt-2 text-slate-400">按回车键开始分析</p>
           </motion.div>
         </form>
