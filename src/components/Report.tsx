@@ -1,5 +1,5 @@
 import { motion } from 'motion/react';
-import { ArrowLeft, ArrowRight, CheckCircle2, Circle } from 'lucide-react';
+import { ArrowLeft, ArrowRight, CheckCircle2, Circle, ShieldAlert, XCircle } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { getSiteLabel } from '../lib/analysis';
 import type { AnalysisSession } from '../types/analysis';
@@ -35,6 +35,7 @@ const FIND_STEP_ITEMS = [
 export default function Report({ onBack, session, report }: ReportProps) {
   const sessionTitle = session.asins.length > 0 ? session.asins.join(' vs ') : report.title;
   const isFindMode = report.meta.mode === 'find';
+  const isSourceMode = report.meta.mode === 'source';
 
   return (
     <div className="min-h-screen pb-20 bg-slate-50">
@@ -56,6 +57,8 @@ export default function Report({ onBack, session, report }: ReportProps) {
 
       {isFindMode ? (
         <FindReportLayout session={session} report={report} />
+      ) : isSourceMode ? (
+        <SourceReportLayout session={session} report={report} />
       ) : (
         <DefaultReportLayout session={session} report={report} />
       )}
@@ -325,6 +328,153 @@ function FindReportLayout({ session, report }: { session: AnalysisSession; repor
   );
 }
 
+function SourceReportLayout({ session, report }: { session: AnalysisSession; report: CompetitiveReport }) {
+  const sourceSeed = report.products[0];
+  const benchmarkProduct = report.products[1];
+  const supplierCards = (report.candidatePoolCards || []).filter((card) => /^推荐厂家/.test(card.eyebrow));
+  const sourcingGuide = report.candidatePoolCards?.find((card) => /筛厂标准/.test(card.eyebrow));
+  const verdictCard = report.heroCards[0];
+  const barrierCard = report.heroCards[1];
+  const shortlistCard = report.heroCards[2];
+  const supplyRows = report.comparisonRows.slice(3);
+  const amazonReview = report.reviewBlocks[0];
+  const benchmarkReview = report.reviewBlocks[1];
+  const mustCheckItems = buildSourceChecklistItems([amazonReview, benchmarkReview], 'negatives');
+  const laterCheckItems = buildSourceChecklistItems([amazonReview, benchmarkReview], 'positives');
+  const killCriteriaItems = buildSourceKillCriteriaItems([amazonReview, benchmarkReview]);
+
+  return (
+    <motion.main
+      initial="hidden"
+      animate="visible"
+      transition={{ staggerChildren: 0.08 }}
+      className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 space-y-6"
+    >
+      <motion.section variants={variants} className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="px-6 py-6 lg:px-8 lg:py-7 grid grid-cols-1 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.25fr)] gap-8">
+          <div>
+            <div className="text-xs font-bold tracking-wider text-slate-400 uppercase mb-3">
+              {report.meta.date} &middot; {report.meta.marketplace} &middot; {report.meta.source}
+            </div>
+            <h1 className="text-4xl font-semibold tracking-tight text-slate-900 mb-4">{report.title}</h1>
+            <p className="text-base text-slate-600 leading-relaxed mb-5 max-w-2xl">{report.summary}</p>
+
+            <div className="flex flex-wrap gap-2">
+              {session.site !== 'AUTO' && (
+                <Pill>站点：<strong className="text-slate-900">{getSiteLabel(session.site)}</strong></Pill>
+              )}
+              {session.asins.map((asin) => (
+                <Pill key={asin}>Input：<strong className="text-slate-900">{asin}</strong></Pill>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-slate-50 p-6">
+            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(0,0.8fr)] gap-4 items-stretch">
+              <SourceConclusionCard card={verdictCard} />
+              <SourceMetricCard card={shortlistCard} />
+              <SourceMetricCard card={barrierCard} />
+            </div>
+          </div>
+        </div>
+      </motion.section>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[300px_minmax(0,1fr)_320px] gap-6 items-start">
+        <motion.aside variants={variants} className="space-y-6">
+          <SourceSideProductCard title="Amazon 种子款" product={sourceSeed} />
+          <SourceSupplySnapshot rows={supplyRows} />
+        </motion.aside>
+
+        <motion.section variants={variants} className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-5 border-b border-slate-200 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-1">推荐厂家 shortlist</div>
+              <h2 className="text-2xl font-semibold text-slate-900">先联系谁，不先泛问谁</h2>
+            </div>
+            <div className="text-sm text-slate-500">先联系 shortlist，再决定要不要扩大询盘面。</div>
+          </div>
+
+          <div className="p-6 grid grid-cols-1 xl:grid-cols-3 gap-5">
+            {supplierCards.map((card, index) => (
+              <SourceSupplierCard key={`${card.eyebrow}-${card.title}`} card={card} rank={index + 1} />
+            ))}
+          </div>
+        </motion.section>
+
+        <motion.aside variants={variants} className="space-y-6">
+          <SourceInsightPanel title="为什么推荐" lines={sourcingGuide?.points || []} links={sourcingGuide?.links} caution={sourcingGuide?.caution} />
+          <SourceEvidenceStack title="供给盘判断" rows={supplyRows} />
+        </motion.aside>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)] gap-6 items-start">
+        <motion.section variants={variants} className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-5 border-b border-slate-200">
+            <div className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-1">供给匹配证据</div>
+            <h2 className="text-2xl font-semibold text-slate-900">不是先比最低价，而是先看供给能不能接住目标款</h2>
+          </div>
+
+          <div className="p-6 space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              {report.trafficColumns.map((column) => (
+                <FindEvidenceCard key={column.title} card={column} accent={column.accent} />
+              ))}
+            </div>
+
+            <div className="rounded-2xl border border-blue-100 bg-blue-50/70 p-5 text-sm text-blue-950 leading-relaxed">
+              <strong className="text-blue-700">寻源判断：</strong> {report.trafficInsight}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <SourceReviewTranslateBlock title="Amazon 差评翻译成打样条件" lines={mustCheckItems} tone="danger" />
+              <SourceReviewTranslateBlock title="主流卖点翻译成保留条件" lines={laterCheckItems} tone="safe" />
+            </div>
+          </div>
+        </motion.section>
+
+        <motion.section variants={variants} className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-5 border-b border-slate-200">
+            <div className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-1">打样工作台</div>
+            <h2 className="text-2xl font-semibold text-slate-900">先验证什么，哪些条件直接杀掉</h2>
+          </div>
+
+          <div className="p-6 space-y-5">
+            <SourceChecklistPanel title="必须验证" items={mustCheckItems} tone="danger" />
+            <SourceChecklistPanel title="可延后验证" items={laterCheckItems} tone="neutral" />
+            <SourceKillCriteriaPanel items={killCriteriaItems} />
+          </div>
+        </motion.section>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-6 items-start">
+        <motion.section variants={variants} className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-5 border-b border-slate-200">
+            <div className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-1">Amazon 基准盘</div>
+            <h2 className="text-2xl font-semibold text-slate-900">先用基准款定义目标款，不先被 1688 货盘带偏</h2>
+          </div>
+          <div className="p-6">
+            {benchmarkProduct && <CompactProductCard product={benchmarkProduct} emphasize />}
+          </div>
+        </motion.section>
+
+        <motion.section variants={variants} className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-5 border-b border-slate-200">
+            <div className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-1">下一步动作</div>
+            <h2 className="text-2xl font-semibold text-slate-900">让 shortlist 尽快进入打样和复核</h2>
+          </div>
+          <div className="p-6 space-y-6">
+            <ActionGrid cards={report.actionCards} />
+            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-5">
+              <div className="text-sm font-semibold text-slate-900 mb-4">执行路径</div>
+              <RoadmapGrid steps={report.roadmapSteps} compact />
+            </div>
+          </div>
+        </motion.section>
+      </div>
+    </motion.main>
+  );
+}
+
 function ReportHeroSection({ session, report }: { session: AnalysisSession; report: CompetitiveReport }) {
   return (
     <motion.section variants={variants} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden">
@@ -402,6 +552,78 @@ function StepSectionHeader({ step, title, desc }: { step: string; title: string;
   );
 }
 
+function SourceConclusionCard({ card }: { card?: ReportHeroCard }) {
+  if (!card) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-2xl border border-emerald-200 bg-white p-5 flex items-center gap-4">
+      <div className="w-16 h-16 rounded-full bg-emerald-50 border border-emerald-200 flex items-center justify-center shrink-0">
+        <CheckCircle2 className="w-8 h-8 text-emerald-600" />
+      </div>
+      <div>
+        <div className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-1">{card.label}</div>
+        <div className="text-3xl font-semibold text-emerald-700 mb-2">{card.value}</div>
+        <p className="text-sm text-slate-600 leading-relaxed">{card.desc}</p>
+      </div>
+    </div>
+  );
+}
+
+function SourceMetricCard({ card }: { card?: ReportHeroCard }) {
+  if (!card) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-5">
+      <div className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-2">{card.label}</div>
+      <div className="text-3xl font-semibold text-slate-900 mb-2">{card.value}</div>
+      <p className="text-sm text-slate-600 leading-relaxed">{card.desc}</p>
+    </div>
+  );
+}
+
+function SourceSideProductCard({ title, product }: { title: string; product?: ReportProduct }) {
+  if (!product) {
+    return null;
+  }
+
+  return (
+    <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+      <div className="px-5 py-4 border-b border-slate-200">
+        <div className="text-xl font-semibold text-slate-900">{title}</div>
+      </div>
+      <div className="p-5">
+        <CompactProductCard product={product} />
+      </div>
+    </div>
+  );
+}
+
+function SourceSupplySnapshot({ rows }: { rows: ReportComparisonRow[] }) {
+  return (
+    <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+      <div className="px-5 py-4 border-b border-slate-200">
+        <div className="text-xl font-semibold text-slate-900">1688 供给盘</div>
+      </div>
+      <div className="p-5 space-y-4">
+        {rows.slice(0, 3).map((row) => (
+          <div key={row.title} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+            <div className="text-sm font-semibold text-slate-900 mb-2">{row.title}</div>
+            <div className="flex flex-wrap gap-2 mb-2 text-xs">
+              <span className="px-2.5 py-1 rounded-full border border-slate-200 bg-white text-slate-700">{row.val1}</span>
+              <span className="px-2.5 py-1 rounded-full border border-slate-200 bg-white text-slate-700">{row.val2}</span>
+            </div>
+            <p className="text-sm text-slate-500 leading-relaxed">{row.desc}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ProductCard({ product }: { product: ReportProduct }) {
   return (
     <div className="bg-white border border-slate-100 rounded-xl p-6 shadow-sm">
@@ -467,6 +689,193 @@ function MetricCard({
       <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">{metric.label}</div>
       <div className={`${compact ? 'text-base' : 'text-xl'} font-semibold text-slate-900 mb-1`}>{metric.value}</div>
       <div className="text-xs text-slate-500 font-medium">{metric.sub}</div>
+    </div>
+  );
+}
+
+function SourceSupplierCard({ card, rank }: { card: ReportCandidateCard; rank: number }) {
+  const isPrimary = rank === 1;
+  const statusLabel = isPrimary ? '优先联系' : rank === 2 ? '备选观察' : '不建议泛联';
+  const statusClass = isPrimary
+    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+    : rank === 2
+      ? 'bg-amber-50 text-amber-700 border-amber-200'
+      : 'bg-rose-50 text-rose-700 border-rose-200';
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <div className="inline-flex items-center gap-2">
+          <div className="w-8 h-8 rounded-full bg-blue-600 text-white text-sm font-semibold flex items-center justify-center">{rank}</div>
+          <div className={`px-3 py-1 rounded-full border text-xs font-semibold ${statusClass}`}>{statusLabel}</div>
+        </div>
+        <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">{card.eyebrow}</div>
+      </div>
+
+      <h3 className="text-lg font-semibold text-slate-900 mb-3 leading-snug">{card.title}</h3>
+      <p className="text-sm text-slate-600 leading-relaxed mb-4">{card.summary}</p>
+
+      <div className="space-y-3">
+        {card.points.map((point) => (
+          <div key={point} className="rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm text-slate-600 leading-relaxed">
+            {point}
+          </div>
+        ))}
+      </div>
+
+      {card.links && card.links.length > 0 && (
+        <div className="mt-4 flex flex-wrap gap-2">
+          {card.links.map((link) => (
+            <a
+              key={`${card.title}-${link.label}`}
+              href={link.url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center px-3 py-1.5 rounded border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-100 transition-colors"
+            >
+              {link.label}
+            </a>
+          ))}
+        </div>
+      )}
+
+      {card.caution && (
+        <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <strong className="text-amber-700">注意：</strong> {card.caution}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SourceInsightPanel({
+  title,
+  lines,
+  links,
+  caution,
+}: {
+  title: string;
+  lines: string[];
+  links?: Array<{ label: string; url: string }>;
+  caution?: string;
+}) {
+  return (
+    <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+      <div className="px-5 py-4 border-b border-slate-200">
+        <div className="text-xl font-semibold text-slate-900">{title}</div>
+      </div>
+      <div className="p-5">
+        <ul className="space-y-3">
+          {lines.map((line) => (
+            <li key={line} className="flex gap-3 text-sm text-slate-600 leading-relaxed">
+              <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
+              <span>{line}</span>
+            </li>
+          ))}
+        </ul>
+
+        {links && links.length > 0 && (
+          <div className="mt-4 flex flex-wrap gap-2">
+            {links.map((link) => (
+              <a
+                key={`${title}-${link.label}`}
+                href={link.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center px-3 py-1.5 rounded border border-slate-200 bg-slate-50 text-xs font-medium text-slate-700 hover:bg-slate-100 transition-colors"
+              >
+                {link.label}
+              </a>
+            ))}
+          </div>
+        )}
+
+        {caution && (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <strong className="text-amber-700">提示：</strong> {caution}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SourceEvidenceStack({ title, rows }: { title: string; rows: ReportComparisonRow[] }) {
+  return (
+    <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+      <div className="px-5 py-4 border-b border-slate-200">
+        <div className="text-xl font-semibold text-slate-900">{title}</div>
+      </div>
+      <div className="p-5 space-y-4">
+        {rows.map((row) => (
+          <FindEvidenceRow key={row.title} row={row} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SourceReviewTranslateBlock({
+  title,
+  lines,
+  tone,
+}: {
+  title: string;
+  lines: string[];
+  tone: 'danger' | 'safe';
+}) {
+  const isDanger = tone === 'danger';
+  return (
+    <div className={`rounded-2xl border p-5 ${isDanger ? 'border-rose-200 bg-rose-50/70' : 'border-emerald-200 bg-emerald-50/70'}`}>
+      <div className={`text-sm font-semibold mb-4 ${isDanger ? 'text-rose-700' : 'text-emerald-700'}`}>{title}</div>
+      <div className="space-y-3">
+        {lines.map((line) => (
+          <div key={line} className="rounded-xl border border-white/80 bg-white/80 px-4 py-3 text-sm text-slate-600 leading-relaxed">
+            {line}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SourceChecklistPanel({
+  title,
+  items,
+  tone,
+}: {
+  title: string;
+  items: string[];
+  tone: 'danger' | 'neutral';
+}) {
+  const isDanger = tone === 'danger';
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-5">
+      <div className={`text-sm font-semibold mb-4 ${isDanger ? 'text-rose-700' : 'text-slate-700'}`}>{title}</div>
+      <div className="space-y-3">
+        {items.map((item) => (
+          <div key={item} className="flex gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 leading-relaxed">
+            {isDanger ? <ShieldAlert className="w-4 h-4 text-rose-500 mt-0.5 shrink-0" /> : <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />}
+            <span>{item}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SourceKillCriteriaPanel({ items }: { items: string[] }) {
+  return (
+    <div className="rounded-2xl border border-rose-200 bg-rose-50/70 p-5">
+      <div className="text-lg font-semibold text-rose-700 mb-4">Kill Criteria</div>
+      <div className="space-y-3">
+        {items.map((item) => (
+          <div key={item} className="flex gap-3 rounded-xl border border-rose-200 bg-white/80 px-4 py-3 text-sm text-slate-700 leading-relaxed">
+            <XCircle className="w-4 h-4 text-rose-500 mt-0.5 shrink-0" />
+            <span>{item}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -746,6 +1155,28 @@ function ReviewList({ title, items, accent }: { title: string; items: string[]; 
       </ul>
     </div>
   );
+}
+
+function buildSourceChecklistItems(blocks: Array<ReportReviewBlock | undefined>, field: 'negatives' | 'positives') {
+  return [...new Set(blocks.flatMap((block) => block?.[field] || []))]
+    .slice(0, 5)
+    .map((item) => {
+      if (field === 'negatives') {
+        return `${item}：打样阶段必须先验证，不能等上架后再发现。`;
+      }
+
+      return `${item}：这是主流用户已经买单的部分，打样时不要丢。`;
+    });
+}
+
+function buildSourceKillCriteriaItems(blocks: Array<ReportReviewBlock | undefined>) {
+  const labels = [...new Set(blocks.flatMap((block) => block?.negatives || []))].slice(0, 5);
+
+  if (!labels.length) {
+    return ['如果样品无法稳定对齐核心配置、质量和安全要求，就不要继续推进。'];
+  }
+
+  return labels.map((label) => `${label}：如果样品阶段不能明显改善，这条供给就不建议继续。`);
 }
 
 function RoadmapCard({ step }: { step: ReportRoadmapStep }) {
