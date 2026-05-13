@@ -1,6 +1,6 @@
 import { motion } from 'motion/react';
 import { ArrowLeft, ArrowRight, CheckCircle2, Circle, ShieldAlert, XCircle } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { getSiteLabel } from '../lib/analysis';
 import type { AnalysisSession } from '../types/analysis';
 import type {
@@ -32,14 +32,102 @@ const FIND_STEP_ITEMS = [
   { id: 'step-4', label: 'Step 4', title: '看执行动作' },
 ];
 
+const SOURCE_STEP_ITEMS = [
+  { id: 'source-verdict', label: '01', title: '先看值不值得找厂', desc: '先看结论、门槛和 shortlist 数量。' },
+  { id: 'source-shortlist', label: '02', title: '看推荐厂家', desc: '先联系谁，再决定要不要扩盘。' },
+  { id: 'source-evidence', label: '03', title: '看匹配证据', desc: '先核对目标款有没有被供给盘接住。' },
+  { id: 'source-sampling', label: '04', title: '看打样与 kill', desc: '明确哪些样品先打、哪些条件直接杀掉。' },
+];
+
+function useActiveSection(sectionIds: string[]) {
+  const [activeSectionId, setActiveSectionId] = useState(sectionIds[0] || '');
+
+  useEffect(() => {
+    if (sectionIds.length === 0 || typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const sections = sectionIds
+      .map((id) => document.getElementById(id))
+      .filter((section): section is HTMLElement => Boolean(section));
+
+    if (sections.length === 0) {
+      setActiveSectionId(sectionIds[0] || '');
+      return undefined;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visibleEntries = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
+
+        if (visibleEntries.length > 0) {
+          setActiveSectionId(visibleEntries[0].target.id);
+        }
+      },
+      {
+        rootMargin: '-18% 0px -55% 0px',
+        threshold: [0.2, 0.35, 0.55],
+      },
+    );
+
+    sections.forEach((section) => observer.observe(section));
+
+    return () => observer.disconnect();
+  }, [sectionIds]);
+
+  return activeSectionId;
+}
+
+function useScrollProgress() {
+  const [progress, setProgress] = useState(0);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const handleScroll = () => {
+      const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+      const nextProgress = scrollable <= 0 ? 0 : Math.min(1, Math.max(0, window.scrollY / scrollable));
+      setProgress(nextProgress);
+    };
+
+    handleScroll();
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    window.addEventListener('resize', handleScroll);
+
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      window.removeEventListener('resize', handleScroll);
+    };
+  }, []);
+
+  return progress;
+}
+
 export default function Report({ onBack, session, report }: ReportProps) {
   const sessionTitle = session.asins.length > 0 ? session.asins.join(' vs ') : report.title;
   const isFindMode = report.meta.mode === 'find';
   const isSourceMode = report.meta.mode === 'source';
+  const trackedSections = isFindMode
+    ? FIND_STEP_ITEMS.map((item) => item.id)
+    : isSourceMode
+      ? SOURCE_STEP_ITEMS.map((item) => item.id)
+      : report.navItems.map((item) => item.id);
+  const activeSectionId = useActiveSection(trackedSections);
+  const scrollProgress = useScrollProgress();
 
   return (
     <div className="min-h-screen pb-20 bg-slate-50">
       <div className="sticky top-0 z-50 bg-white/95 backdrop-blur border-b border-slate-200">
+        <div className="h-0.5 bg-slate-100 overflow-hidden">
+          <div
+            className="h-full bg-gradient-to-r from-blue-600 via-cyan-500 to-emerald-500 transition-[width] duration-300 ease-out"
+            style={{ width: `${Math.max(scrollProgress * 100, 4)}%` }}
+          />
+        </div>
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <button
             onClick={onBack}
@@ -56,17 +144,25 @@ export default function Report({ onBack, session, report }: ReportProps) {
       </div>
 
       {isFindMode ? (
-        <FindReportLayout session={session} report={report} />
+        <FindReportLayout session={session} report={report} activeSectionId={activeSectionId} />
       ) : isSourceMode ? (
-        <SourceReportLayout session={session} report={report} />
+        <SourceReportLayout session={session} report={report} activeSectionId={activeSectionId} />
       ) : (
-        <DefaultReportLayout session={session} report={report} />
+        <DefaultReportLayout session={session} report={report} activeSectionId={activeSectionId} />
       )}
     </div>
   );
 }
 
-function DefaultReportLayout({ session, report }: { session: AnalysisSession; report: CompetitiveReport }) {
+function DefaultReportLayout({
+  session,
+  report,
+  activeSectionId,
+}: {
+  session: AnalysisSession;
+  report: CompetitiveReport;
+  activeSectionId: string;
+}) {
   return (
     <motion.main
       initial="hidden"
@@ -76,19 +172,18 @@ function DefaultReportLayout({ session, report }: { session: AnalysisSession; re
     >
       <ReportHeroSection session={session} report={report} />
 
-      <motion.nav variants={variants} className="flex gap-2 pb-2 overflow-x-auto no-scrollbar">
-        {report.navItems.map((item) => (
-          <a
-            key={item.id}
-            href={`#${item.id}`}
-            className="flex-none px-4 py-2 rounded text-sm font-medium border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors"
-          >
-            {item.label}
-          </a>
-        ))}
-      </motion.nav>
+      <motion.div variants={variants} className="sticky top-[4.5rem] z-30">
+        <ModeSectionNav
+          items={report.navItems.map((item, index) => ({
+            id: item.id,
+            label: `${String(index + 1).padStart(2, '0')}`,
+            title: item.label,
+          }))}
+          activeSectionId={activeSectionId}
+        />
+      </motion.div>
 
-      <motion.section variants={variants} id="产品卡" className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+      <motion.section variants={variants} id="产品卡" className="bg-white p-6 rounded-[28px] border border-slate-200 shadow-sm">
         <SectionHeader title="产品卡" desc={report.sectionCopy.products} />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {report.products.map((product) => (
@@ -98,25 +193,25 @@ function DefaultReportLayout({ session, report }: { session: AnalysisSession; re
       </motion.section>
 
       {report.modeFocusCards && report.modeFocusCards.length > 0 && (
-        <motion.section variants={variants} id={report.modeFocusTitle || '模式判断'} className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+        <motion.section variants={variants} id={report.modeFocusTitle || '模式判断'} className="bg-white p-6 rounded-[28px] border border-slate-200 shadow-sm">
           <SectionHeader title={report.modeFocusTitle || '模式判断'} desc={report.sectionCopy.modeFocus || report.sectionCopy.comparison} />
           <CardGrid cards={report.modeFocusCards} />
         </motion.section>
       )}
 
       {report.candidatePoolCards && report.candidatePoolCards.length > 0 && (
-        <motion.section variants={variants} id={report.candidatePoolTitle || '候选池'} className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+        <motion.section variants={variants} id={report.candidatePoolTitle || '候选池'} className="bg-white p-6 rounded-[28px] border border-slate-200 shadow-sm">
           <SectionHeader title={report.candidatePoolTitle || '候选池'} desc={report.sectionCopy.candidates || report.sectionCopy.comparison} />
           <CandidatePoolGrid cards={report.candidatePoolCards} />
         </motion.section>
       )}
 
-      <motion.section variants={variants} id="核心对比" className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      <motion.section variants={variants} id="核心对比" className="bg-white p-6 rounded-[28px] border border-slate-200 shadow-sm overflow-hidden">
         <SectionHeader title="核心对比" desc={report.sectionCopy.comparison} />
         <ComparisonTable rows={report.comparisonRows} leftLabel={report.labels.left} rightLabel={report.labels.right} />
       </motion.section>
 
-      <motion.section variants={variants} id="类目环境" className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+      <motion.section variants={variants} id="类目环境" className="bg-white p-6 rounded-[28px] border border-slate-200 shadow-sm">
         <SectionHeader title="类目环境" desc={report.sectionCopy.category} />
         <div className="mb-6">
           <CardGrid cards={report.categoryCards} />
@@ -124,12 +219,12 @@ function DefaultReportLayout({ session, report }: { session: AnalysisSession; re
         <ComparisonTable rows={report.categoryRows} leftLabel={report.labels.left} rightLabel={report.labels.right} />
       </motion.section>
 
-      <motion.section variants={variants} id="流量与关键词" className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+      <motion.section variants={variants} id="流量与关键词" className="bg-white p-6 rounded-[28px] border border-slate-200 shadow-sm">
         <SectionHeader title="流量与关键词" desc={report.sectionCopy.traffic} />
         <TrafficSection report={report} />
       </motion.section>
 
-      <motion.section variants={variants} id="评价洞察" className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+      <motion.section variants={variants} id="评价洞察" className="bg-white p-6 rounded-[28px] border border-slate-200 shadow-sm">
         <SectionHeader title="评价洞察" desc={report.sectionCopy.reviews} />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {report.reviewBlocks.map((block) => (
@@ -138,12 +233,12 @@ function DefaultReportLayout({ session, report }: { session: AnalysisSession; re
         </div>
       </motion.section>
 
-      <motion.section variants={variants} id="执行建议" className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+      <motion.section variants={variants} id="执行建议" className="bg-white p-6 rounded-[28px] border border-slate-200 shadow-sm">
         <SectionHeader title="执行建议" desc={report.sectionCopy.actions} />
         <ActionGrid cards={report.actionCards} />
       </motion.section>
 
-      <motion.section variants={variants} id="执行路径" className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+      <motion.section variants={variants} id="执行路径" className="bg-white p-6 rounded-[28px] border border-slate-200 shadow-sm">
         <SectionHeader title="执行路径" desc={report.sectionCopy.roadmap} />
         <RoadmapGrid steps={report.roadmapSteps} />
       </motion.section>
@@ -153,7 +248,15 @@ function DefaultReportLayout({ session, report }: { session: AnalysisSession; re
   );
 }
 
-function FindReportLayout({ session, report }: { session: AnalysisSession; report: CompetitiveReport }) {
+function FindReportLayout({
+  session,
+  report,
+  activeSectionId,
+}: {
+  session: AnalysisSession;
+  report: CompetitiveReport;
+  activeSectionId: string;
+}) {
   const seedProduct = report.products[0];
   const primaryCompetitor = report.products[1];
   const firstCandidate = report.candidatePoolCards?.[0];
@@ -176,11 +279,11 @@ function FindReportLayout({ session, report }: { session: AnalysisSession; repor
 
       <div className="mt-6 grid grid-cols-1 xl:grid-cols-[220px_minmax(0,1fr)] gap-6 items-start">
         <motion.aside variants={variants} className="xl:sticky xl:top-24">
-          <FindStepRail />
+          <FindStepRail activeSectionId={activeSectionId} />
         </motion.aside>
 
         <div className="space-y-6">
-          <motion.section variants={variants} id="step-1" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          <motion.section variants={variants} id="step-1" className="bg-white rounded-[28px] border border-slate-200 shadow-sm overflow-hidden">
             <StepSectionHeader
               step="Step 1"
               title="锁定第一竞对"
@@ -208,7 +311,7 @@ function FindReportLayout({ session, report }: { session: AnalysisSession; repor
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-5">
+                  <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-5">
                     <CompactProductCard product={primaryCompetitor} emphasize />
                     <div className="bg-white rounded-2xl border border-blue-100 p-5">
                       <div className="text-sm font-semibold text-blue-700 mb-4">为什么锁它</div>
@@ -227,7 +330,7 @@ function FindReportLayout({ session, report }: { session: AnalysisSession; repor
             </div>
           </motion.section>
 
-          <motion.section variants={variants} id="step-2" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          <motion.section variants={variants} id="step-2" className="bg-white rounded-[28px] border border-slate-200 shadow-sm overflow-hidden">
             <StepSectionHeader
               step="Step 2"
               title="看候选池层级"
@@ -267,7 +370,7 @@ function FindReportLayout({ session, report }: { session: AnalysisSession; repor
             </div>
           </motion.section>
 
-          <motion.section variants={variants} id="step-3" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          <motion.section variants={variants} id="step-3" className="bg-white rounded-[28px] border border-slate-200 shadow-sm overflow-hidden">
             <StepSectionHeader
               step="Step 3"
               title="看关键词证据"
@@ -307,7 +410,7 @@ function FindReportLayout({ session, report }: { session: AnalysisSession; repor
             </div>
           </motion.section>
 
-          <motion.section variants={variants} id="step-4" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          <motion.section variants={variants} id="step-4" className="bg-white rounded-[28px] border border-slate-200 shadow-sm overflow-hidden">
             <StepSectionHeader
               step="Step 4"
               title="看执行动作"
@@ -328,7 +431,15 @@ function FindReportLayout({ session, report }: { session: AnalysisSession; repor
   );
 }
 
-function SourceReportLayout({ session, report }: { session: AnalysisSession; report: CompetitiveReport }) {
+function SourceReportLayout({
+  session,
+  report,
+  activeSectionId,
+}: {
+  session: AnalysisSession;
+  report: CompetitiveReport;
+  activeSectionId: string;
+}) {
   const sourceSeed = report.products[0];
   const benchmarkProduct = report.products[1];
   const supplierCards = (report.candidatePoolCards || []).filter((card) => /^推荐厂家/.test(card.eyebrow));
@@ -350,7 +461,11 @@ function SourceReportLayout({ session, report }: { session: AnalysisSession; rep
       transition={{ staggerChildren: 0.08 }}
       className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 space-y-6"
     >
-      <motion.section variants={variants} className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+      <motion.section
+        variants={variants}
+        id="source-verdict"
+        className="bg-white rounded-[28px] border border-slate-200 shadow-sm overflow-hidden"
+      >
         <div className="px-6 py-6 lg:px-8 lg:py-7 grid grid-cols-1 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.25fr)] gap-8">
           <div>
             <div className="text-xs font-bold tracking-wider text-slate-400 uppercase mb-3">
@@ -379,13 +494,21 @@ function SourceReportLayout({ session, report }: { session: AnalysisSession; rep
         </div>
       </motion.section>
 
+      <motion.div variants={variants} className="sticky top-[4.5rem] z-30">
+        <ModeSectionNav items={SOURCE_STEP_ITEMS} activeSectionId={activeSectionId} compact />
+      </motion.div>
+
       <div className="grid grid-cols-1 xl:grid-cols-[300px_minmax(0,1fr)_320px] gap-6 items-start">
-        <motion.aside variants={variants} className="space-y-6">
+        <motion.aside variants={variants} className="space-y-6 xl:sticky xl:top-32">
           <SourceSideProductCard title="Amazon 种子款" product={sourceSeed} />
           <SourceSupplySnapshot rows={supplyRows} />
         </motion.aside>
 
-        <motion.section variants={variants} className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+        <motion.section
+          variants={variants}
+          id="source-shortlist"
+          className="bg-white rounded-[28px] border border-slate-200 shadow-sm overflow-hidden"
+        >
           <div className="px-6 py-5 border-b border-slate-200 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
             <div>
               <div className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-1">推荐厂家 shortlist</div>
@@ -394,21 +517,25 @@ function SourceReportLayout({ session, report }: { session: AnalysisSession; rep
             <div className="text-sm text-slate-500">先联系 shortlist，再决定要不要扩大询盘面。</div>
           </div>
 
-          <div className="p-6 grid grid-cols-1 xl:grid-cols-3 gap-5">
+          <div className="p-6 grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-5">
             {supplierCards.map((card, index) => (
               <SourceSupplierCard key={`${card.eyebrow}-${card.title}`} card={card} rank={index + 1} />
             ))}
           </div>
         </motion.section>
 
-        <motion.aside variants={variants} className="space-y-6">
+        <motion.aside variants={variants} className="space-y-6 xl:sticky xl:top-32">
           <SourceInsightPanel title="为什么推荐" lines={sourcingGuide?.points || []} links={sourcingGuide?.links} caution={sourcingGuide?.caution} />
           <SourceEvidenceStack title="供给盘判断" rows={supplyRows} />
         </motion.aside>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)] gap-6 items-start">
-        <motion.section variants={variants} className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+        <motion.section
+          variants={variants}
+          id="source-evidence"
+          className="bg-white rounded-[28px] border border-slate-200 shadow-sm overflow-hidden"
+        >
           <div className="px-6 py-5 border-b border-slate-200">
             <div className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-1">供给匹配证据</div>
             <h2 className="text-2xl font-semibold text-slate-900">不是先比最低价，而是先看供给能不能接住目标款</h2>
@@ -432,7 +559,11 @@ function SourceReportLayout({ session, report }: { session: AnalysisSession; rep
           </div>
         </motion.section>
 
-        <motion.section variants={variants} className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+        <motion.section
+          variants={variants}
+          id="source-sampling"
+          className="bg-white rounded-[28px] border border-slate-200 shadow-sm overflow-hidden"
+        >
           <div className="px-6 py-5 border-b border-slate-200">
             <div className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-1">打样工作台</div>
             <h2 className="text-2xl font-semibold text-slate-900">先验证什么，哪些条件直接杀掉</h2>
@@ -447,7 +578,7 @@ function SourceReportLayout({ session, report }: { session: AnalysisSession; rep
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-6 items-start">
-        <motion.section variants={variants} className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+        <motion.section variants={variants} className="bg-white rounded-[28px] border border-slate-200 shadow-sm overflow-hidden">
           <div className="px-6 py-5 border-b border-slate-200">
             <div className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-1">Amazon 基准盘</div>
             <h2 className="text-2xl font-semibold text-slate-900">先用基准款定义目标款，不先被 1688 货盘带偏</h2>
@@ -457,7 +588,7 @@ function SourceReportLayout({ session, report }: { session: AnalysisSession; rep
           </div>
         </motion.section>
 
-        <motion.section variants={variants} className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+        <motion.section variants={variants} className="bg-white rounded-[28px] border border-slate-200 shadow-sm overflow-hidden">
           <div className="px-6 py-5 border-b border-slate-200">
             <div className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-1">下一步动作</div>
             <h2 className="text-2xl font-semibold text-slate-900">让 shortlist 尽快进入打样和复核</h2>
@@ -477,15 +608,16 @@ function SourceReportLayout({ session, report }: { session: AnalysisSession; rep
 
 function ReportHeroSection({ session, report }: { session: AnalysisSession; report: CompetitiveReport }) {
   return (
-    <motion.section variants={variants} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden">
-      <div className="absolute inset-y-0 right-0 w-72 bg-gradient-to-l from-blue-50/80 to-transparent pointer-events-none" />
+    <motion.section variants={variants} className="bg-white p-6 rounded-[28px] border border-slate-200 shadow-sm relative overflow-hidden">
+      <div className="absolute inset-y-0 right-0 w-80 bg-gradient-to-l from-blue-50/90 via-cyan-50/40 to-transparent pointer-events-none" />
+      <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-slate-50/80 to-transparent pointer-events-none" />
       <div className="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
         <div className="max-w-4xl">
           <h4 className="text-blue-600 font-bold text-xs uppercase tracking-wider mb-4 flex items-center gap-2">
             {report.meta.date} <span>&middot;</span> {report.meta.marketplace} <span>&middot;</span> {report.meta.source}
           </h4>
           <h1 className="text-3xl font-semibold text-slate-900 mb-4">{report.title}</h1>
-          <p className="text-sm text-slate-600 leading-relaxed mb-5">{report.summary}</p>
+          <p className="text-[15px] text-slate-600 leading-8 mb-5 max-w-4xl">{report.summary}</p>
 
           <div className="flex flex-wrap gap-2">
             {session.site !== 'AUTO' && (
@@ -500,11 +632,11 @@ function ReportHeroSection({ session, report }: { session: AnalysisSession; repo
           </div>
         </div>
 
-        <div className="w-full lg:w-72 shrink-0 rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+        <div className="w-full lg:w-80 shrink-0 rounded-[24px] border border-slate-200 bg-white/90 p-4 shadow-[0_20px_40px_-28px_rgba(15,23,42,0.35)]">
           <div className="text-xs font-bold tracking-wider text-slate-400 uppercase mb-3">本页怎么读</div>
           <div className="space-y-3">
             {report.heroCards.map((card) => (
-              <div key={`${card.label}-${card.value}`} className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+              <div key={`${card.label}-${card.value}`} className="rounded-2xl border border-slate-200 bg-gradient-to-br from-white to-slate-50 px-4 py-3 transition-transform duration-200 hover:-translate-y-0.5">
                 <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">{card.label}</div>
                 <div className="text-base font-semibold text-slate-900 mb-1">{card.value}</div>
                 <p className="text-xs text-slate-500 leading-relaxed">{card.desc}</p>
@@ -517,18 +649,55 @@ function ReportHeroSection({ session, report }: { session: AnalysisSession; repo
   );
 }
 
-function FindStepRail() {
+function ModeSectionNav({
+  items,
+  activeSectionId,
+  compact = false,
+}: {
+  items: Array<{ id: string; label: string; title: string; desc?: string }>;
+  activeSectionId: string;
+  compact?: boolean;
+}) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <div className="rounded-[22px] border border-slate-200 bg-white/95 backdrop-blur px-3 py-3 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.4)]">
+      <div className={`grid gap-2 ${compact ? 'grid-cols-1 md:grid-cols-4' : 'grid-cols-1 md:grid-cols-2 xl:grid-cols-4'}`}>
+        {items.map((item) => {
+          const isActive = activeSectionId === item.id;
+          return (
+            <a
+              key={item.id}
+              href={`#${item.id}`}
+              className={`rounded-2xl border px-4 py-3 transition-all duration-200 ${
+                isActive
+                  ? 'border-blue-200 bg-blue-50 text-blue-950 shadow-[0_16px_30px_-24px_rgba(37,99,235,0.5)]'
+                  : 'border-transparent bg-slate-50/80 text-slate-600 hover:border-slate-200 hover:bg-white'
+              }`}
+            >
+              <div className={`text-[11px] font-bold tracking-[0.18em] uppercase mb-1 ${isActive ? 'text-blue-600' : 'text-slate-400'}`}>
+                {item.label}
+              </div>
+              <div className="text-sm font-semibold">{item.title}</div>
+              {item.desc && <div className="mt-1 text-xs leading-5 text-slate-500">{item.desc}</div>}
+            </a>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function FindStepRail({ activeSectionId }: { activeSectionId: string }) {
+  return (
+    <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_20px_40px_-32px_rgba(15,23,42,0.4)]">
       <div className="space-y-0">
         {FIND_STEP_ITEMS.map((item, index) => {
-          const isActive = index === 0;
+          const isActive = activeSectionId === item.id;
           const isLast = index === FIND_STEP_ITEMS.length - 1;
           return (
             <a key={item.id} href={`#${item.id}`} className="relative flex gap-3 pb-8 last:pb-0 group">
               <div className="relative flex flex-col items-center">
                 {isActive ? <CheckCircle2 className="w-5 h-5 text-blue-600" /> : <Circle className="w-5 h-5 text-slate-300" />}
-                {!isLast && <div className="absolute top-6 w-px h-[calc(100%-0.25rem)] bg-slate-200" />}
+                {!isLast && <div className={`absolute top-6 w-px h-[calc(100%-0.25rem)] ${isActive ? 'bg-blue-200' : 'bg-slate-200'}`} />}
               </div>
               <div>
                 <div className={`text-sm font-semibold ${isActive ? 'text-blue-600' : 'text-slate-400'}`}>{item.label}</div>
@@ -544,8 +713,11 @@ function FindStepRail() {
 
 function StepSectionHeader({ step, title, desc }: { step: string; title: string; desc: string }) {
   return (
-    <div className="px-6 py-5 border-b border-slate-200 bg-gradient-to-r from-slate-50 to-white">
-      <div className="text-sm font-semibold text-blue-600 mb-2">{step}</div>
+    <div className="px-6 py-5 border-b border-slate-200 bg-gradient-to-r from-slate-50 via-white to-slate-50/40">
+      <div className="inline-flex items-center gap-2 rounded-full bg-blue-50 px-3 py-1 text-sm font-semibold text-blue-600 mb-3">
+        <CheckCircle2 className="w-4 h-4" />
+        {step}
+      </div>
       <h2 className="text-2xl font-semibold text-slate-900 mb-2">{title}</h2>
       <p className="text-sm text-slate-500 max-w-3xl leading-relaxed">{desc}</p>
     </div>
@@ -591,7 +763,7 @@ function SourceSideProductCard({ title, product }: { title: string; product?: Re
   }
 
   return (
-    <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+    <div className="bg-white rounded-[28px] border border-slate-200 shadow-sm overflow-hidden">
       <div className="px-5 py-4 border-b border-slate-200">
         <div className="text-xl font-semibold text-slate-900">{title}</div>
       </div>
@@ -604,13 +776,13 @@ function SourceSideProductCard({ title, product }: { title: string; product?: Re
 
 function SourceSupplySnapshot({ rows }: { rows: ReportComparisonRow[] }) {
   return (
-    <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+    <div className="bg-white rounded-[28px] border border-slate-200 shadow-sm overflow-hidden">
       <div className="px-5 py-4 border-b border-slate-200">
         <div className="text-xl font-semibold text-slate-900">1688 供给盘</div>
       </div>
       <div className="p-5 space-y-4">
         {rows.slice(0, 3).map((row) => (
-          <div key={row.title} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+          <div key={row.title} className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-white p-4 transition-transform duration-200 hover:-translate-y-0.5">
             <div className="text-sm font-semibold text-slate-900 mb-2">{row.title}</div>
             <div className="flex flex-wrap gap-2 mb-2 text-xs">
               <span className="px-2.5 py-1 rounded-full border border-slate-200 bg-white text-slate-700">{row.val1}</span>
@@ -703,7 +875,7 @@ function SourceSupplierCard({ card, rank }: { card: ReportCandidateCard; rank: n
       : 'bg-rose-50 text-rose-700 border-rose-200';
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_22px_45px_-34px_rgba(15,23,42,0.45)] transition-transform duration-200 hover:-translate-y-1 flex h-full flex-col">
       <div className="flex items-center justify-between gap-3 mb-4">
         <div className="inline-flex items-center gap-2">
           <div className="w-8 h-8 rounded-full bg-blue-600 text-white text-sm font-semibold flex items-center justify-center">{rank}</div>
@@ -715,7 +887,7 @@ function SourceSupplierCard({ card, rank }: { card: ReportCandidateCard; rank: n
       <h3 className="text-lg font-semibold text-slate-900 mb-3 leading-snug">{card.title}</h3>
       <p className="text-sm text-slate-600 leading-relaxed mb-4">{card.summary}</p>
 
-      <div className="space-y-3">
+      <div className="space-y-3 mb-4">
         {card.points.map((point) => (
           <div key={point} className="rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm text-slate-600 leading-relaxed">
             {point}
@@ -724,7 +896,7 @@ function SourceSupplierCard({ card, rank }: { card: ReportCandidateCard; rank: n
       </div>
 
       {card.links && card.links.length > 0 && (
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-auto flex flex-wrap gap-2 border-t border-slate-200 pt-4">
           {card.links.map((link) => (
             <a
               key={`${card.title}-${link.label}`}
@@ -760,7 +932,7 @@ function SourceInsightPanel({
   caution?: string;
 }) {
   return (
-    <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+    <div className="bg-white rounded-[28px] border border-slate-200 shadow-sm overflow-hidden">
       <div className="px-5 py-4 border-b border-slate-200">
         <div className="text-xl font-semibold text-slate-900">{title}</div>
       </div>
@@ -802,7 +974,7 @@ function SourceInsightPanel({
 
 function SourceEvidenceStack({ title, rows }: { title: string; rows: ReportComparisonRow[] }) {
   return (
-    <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+    <div className="bg-white rounded-[28px] border border-slate-200 shadow-sm overflow-hidden">
       <div className="px-5 py-4 border-b border-slate-200">
         <div className="text-xl font-semibold text-slate-900">{title}</div>
       </div>
@@ -882,7 +1054,7 @@ function SourceKillCriteriaPanel({ items }: { items: string[] }) {
 
 function FindCandidateHighlight({ card }: { card: ReportCandidateCard }) {
   return (
-    <div className="rounded-2xl border border-blue-200 bg-gradient-to-r from-blue-50/80 to-white p-5">
+    <div className="rounded-[24px] border border-blue-200 bg-gradient-to-r from-blue-50/80 via-white to-cyan-50/50 p-5 shadow-[0_18px_38px_-30px_rgba(37,99,235,0.45)]">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <div>
           <div className="text-xs font-bold tracking-wider text-blue-600 uppercase mb-2">{card.eyebrow}</div>
@@ -912,7 +1084,7 @@ function FindCandidateHighlight({ card }: { card: ReportCandidateCard }) {
 
 function CandidateTierCard({ card, muted = false }: { card: ReportCandidateCard; muted?: boolean }) {
   return (
-    <div className={`rounded-xl border p-4 ${muted ? 'border-slate-200 bg-slate-50/70' : 'border-slate-200 bg-white'}`}>
+    <div className={`rounded-2xl border p-4 transition-transform duration-200 hover:-translate-y-0.5 ${muted ? 'border-slate-200 bg-slate-50/70' : 'border-slate-200 bg-white'}`}>
       <div className="flex items-start justify-between gap-3 mb-2">
         <div>
           <div className={`text-xs font-bold tracking-wider uppercase mb-1 ${muted ? 'text-slate-400' : 'text-blue-600'}`}>{card.eyebrow}</div>
@@ -942,7 +1114,7 @@ function FindEvidenceCard({
   accent?: boolean;
 }) {
   return (
-    <div className={`rounded-2xl border p-5 ${accent || card.accent ? 'border-blue-200 bg-blue-50/50' : 'border-slate-200 bg-white'}`}>
+    <div className={`rounded-[22px] border p-5 shadow-[0_18px_38px_-34px_rgba(15,23,42,0.35)] ${accent || card.accent ? 'border-blue-200 bg-blue-50/50' : 'border-slate-200 bg-white'}`}>
       <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">{card.eyebrow}</div>
       <h4 className="text-lg font-semibold text-slate-900 mb-4">{card.title}</h4>
       <ul className="space-y-3 text-sm text-slate-600">
@@ -956,7 +1128,7 @@ function FindEvidenceCard({
 
 function FindEvidenceRow({ row }: { row: ReportComparisonRow }) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-4">
+    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-4">
       <div className="flex flex-wrap items-start justify-between gap-3 mb-2">
         <div className="text-sm font-semibold text-slate-900">{row.title}</div>
         <div className="flex flex-wrap gap-2 text-xs">
@@ -978,7 +1150,12 @@ function TrafficSection({ report }: { report: CompetitiveReport }) {
     <>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
         {report.trafficColumns.map((column) => (
-          <div key={column.title} className={`bg-white rounded-xl p-6 border border-slate-200 shadow-sm ${column.accent ? 'border-l-4 border-l-blue-500' : ''}`}>
+          <div
+            key={column.title}
+            className={`bg-white rounded-[22px] p-6 border border-slate-200 shadow-[0_18px_40px_-34px_rgba(15,23,42,0.35)] transition-transform duration-200 hover:-translate-y-0.5 ${
+              column.accent ? 'border-l-4 border-l-blue-500' : ''
+            }`}
+          >
             <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">{column.eyebrow}</h4>
             <div className="text-2xl font-semibold text-slate-900 mb-4">{column.title}</div>
             <ul className="space-y-3 text-sm text-slate-600 font-medium">
@@ -990,7 +1167,7 @@ function TrafficSection({ report }: { report: CompetitiveReport }) {
         ))}
       </div>
 
-      <div className="bg-indigo-50 border border-indigo-100/50 rounded-2xl p-6 text-indigo-900 font-medium leading-relaxed">
+      <div className="bg-indigo-50 border border-indigo-100/50 rounded-[24px] p-6 text-indigo-900 font-medium leading-relaxed shadow-[0_16px_36px_-34px_rgba(79,70,229,0.55)]">
         <strong className="text-indigo-700">战术启示：</strong> {report.trafficInsight}
       </div>
     </>
@@ -1001,8 +1178,12 @@ function ActionGrid({ cards }: { cards: ReportActionCard[] }) {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       {cards.map((card) => (
-        <div key={card.title} className={`bg-white border-t-4 rounded-xl p-6 shadow-sm border border-slate-200 ${card.accentClass}`}>
-          <div className="text-lg font-semibold text-slate-900 mb-2">{card.priority}: {card.title}</div>
+        <div
+          key={card.title}
+          className={`bg-white border-t-4 rounded-[22px] p-6 shadow-[0_18px_38px_-34px_rgba(15,23,42,0.45)] border border-slate-200 transition-transform duration-200 hover:-translate-y-1 ${card.accentClass}`}
+        >
+          <div className="text-xs font-bold tracking-[0.18em] text-slate-400 uppercase mb-2">{card.priority}</div>
+          <div className="text-lg font-semibold text-slate-900 mb-2">{card.title}</div>
           <p className="text-sm text-slate-600 leading-relaxed">{card.desc}</p>
         </div>
       ))}
@@ -1041,7 +1222,10 @@ function CardGrid({ cards }: { cards: ReportHeroCard[] }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
       {cards.map((card) => (
-        <div key={`${card.label}-${card.value}`} className="bg-white border border-slate-200 rounded-lg p-5 shadow-sm relative group hover:bg-slate-50 transition-all">
+        <div
+          key={`${card.label}-${card.value}`}
+          className="bg-white border border-slate-200 rounded-[22px] p-5 shadow-[0_18px_38px_-34px_rgba(15,23,42,0.35)] relative group hover:bg-slate-50 transition-all duration-200 hover:-translate-y-0.5"
+        >
           <div className="text-xs font-bold tracking-wider text-slate-400 uppercase mb-3">{card.label}</div>
           <div className="text-2xl font-semibold text-slate-900 mb-3">{card.value}</div>
           <p className="text-[13px] text-slate-600 leading-relaxed">{card.desc}</p>
@@ -1055,7 +1239,10 @@ function CandidatePoolGrid({ cards }: { cards: ReportCandidateCard[] }) {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       {cards.map((card) => (
-        <div key={`${card.eyebrow}-${card.title}`} className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+        <div
+          key={`${card.eyebrow}-${card.title}`}
+          className="bg-white border border-slate-200 rounded-[22px] p-6 shadow-[0_18px_38px_-34px_rgba(15,23,42,0.35)] transition-transform duration-200 hover:-translate-y-0.5"
+        >
           <div className="text-xs font-bold tracking-wider text-slate-400 uppercase mb-2">{card.eyebrow}</div>
           <h3 className="text-xl font-semibold text-slate-900 mb-3">{card.title}</h3>
           <p className="text-sm text-slate-600 leading-relaxed mb-4">{card.summary}</p>
