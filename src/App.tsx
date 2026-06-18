@@ -42,7 +42,7 @@ export default function App() {
 
   return (
     <>
-      {view === 'home' && <Home onAnalyze={handleAnalyze} serverError={serverError} />}
+      {view === 'home' && <Home onAnalyze={handleAnalyze} serverError={serverError} initialSession={session} />}
       {view === 'loading' && session && <Loading session={session} />}
       {view === 'report' && session && report && (
         <Report onBack={handleBackToHome} session={session} report={report} />

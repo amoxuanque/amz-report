@@ -1,3 +1,4 @@
+import { createAoxiaClient, isAoxiaConfigured } from './aoxia-client.js';
 import { callSorftimeTool } from './sorftime-client.js';
 
 const SCENARIO_HINTS = [
@@ -66,6 +67,61 @@ const REVIEW_THEMES = [
   { label: '安全/过热风险', patterns: [/burn/i, /smell/i, /spark/i, /fire/i, /hazard/i, /overheat/i] },
   { label: '耐久与可靠性', patterns: [/broke/i, /broken/i, /stopped/i, /stop working/i, /durable/i, /last/i] },
 ];
+
+const SOURCE_NOT_PROMISED = [
+  '不直接输出“放心拿货”结论',
+  '不把列表页信号直接当成店铺履约评分',
+  '不把 1688 列表页信息直接当成工厂资质核验结果',
+];
+
+function hasValidSourceBuyerBrief(brief) {
+  return Boolean(
+    brief &&
+      typeof brief.asinOrUrl === 'string' &&
+      brief.asinOrUrl.trim(),
+  );
+}
+
+function parseSourceBuyerNumber(value) {
+  const normalized = Number(value);
+  return Number.isFinite(normalized) && normalized > 0 ? normalized : null;
+}
+
+function resolveSourceCustomizationNeeds(customizationNeeds = []) {
+  return Array.isArray(customizationNeeds) && customizationNeeds.length > 0 ? customizationNeeds : ['none'];
+}
+
+function resolveSourceBuyerBrief(brief) {
+  return {
+    asinOrUrl: String(brief?.asinOrUrl || '').trim(),
+    targetPriceMin: parseSourceBuyerNumber(brief?.targetPriceMin),
+    targetPriceMax: parseSourceBuyerNumber(brief?.targetPriceMax),
+    maxPurchasePrice: parseSourceBuyerNumber(brief?.maxPurchasePrice),
+    firstOrderQty: parseSourceBuyerNumber(brief?.firstOrderQty),
+    acceptableMoq: parseSourceBuyerNumber(brief?.acceptableMoq),
+    customizationNeeds: resolveSourceCustomizationNeeds(brief?.customizationNeeds),
+  };
+}
+
+function formatBuyerRange(minValue, maxValue, prefix) {
+  if (minValue !== null && maxValue !== null) {
+    return `${prefix}${minValue} - ${prefix}${maxValue}`;
+  }
+
+  if (minValue !== null) {
+    return `≥ ${prefix}${minValue}`;
+  }
+
+  if (maxValue !== null) {
+    return `≤ ${prefix}${maxValue}`;
+  }
+
+  return '待补';
+}
+
+function formatBuyerSingleValue(value, prefix = '', suffix = '') {
+  return value === null ? '待补' : `${prefix}${value}${suffix}`;
+}
 
 function buildNavItems(mode) {
   const modeLabel =
@@ -1051,6 +1107,22 @@ async function fetchProductDataset(asin, site) {
     trend: parseTrend(trendTool.text),
     trafficTerms: parseTrafficTerms(trafficTool.text),
     competitorKeywords: parseCompetitorKeywords(competitorKeywordsTool.text),
+  };
+}
+
+async function fetchSourceAnchorDataset(asin, site) {
+  const detailTool = await callSorftimeTool('product_detail', { asin, amzSite: site });
+  if (isMissingProductDetailText(detailTool.text)) {
+    throw new Error(`${asin} 在 ${getAmazonMarketplaceLabel(site)} 没有查到稳定商品数据，请更换站点或使用默认分析。`);
+  }
+
+  return {
+    detail: parseProductDetail(detailTool.text, asin),
+    positiveReviews: [],
+    negativeReviews: [],
+    trend: [],
+    trafficTerms: [],
+    competitorKeywords: [],
   };
 }
 
@@ -2969,54 +3041,49 @@ function buildSourceModeFocus(seed, benchmark, categoryStats, sourcing) {
   };
 }
 
-function buildSourceCandidatePoolCards(sourcing) {
-  const cards = sourcing.recommendedSuppliers.slice(0, 3).map((supplier, index) => {
-    const supplierPriceBand = supplier.supplierPriceBand;
-    const priceLine = supplierPriceBand
-      ? supplierPriceBand.min === supplierPriceBand.max
-        ? `代表货盘价格约 ¥${supplierPriceBand.min}`
-        : `代表货盘价格约 ¥${supplierPriceBand.min} - ¥${supplierPriceBand.max}`
-      : '当前价格带还不稳定';
-
-    return {
-      eyebrow: `推荐厂家 ${index + 1}`,
-      title: supplier.seller,
-      summary: supplier.reasonLines[0] || '这家不是最便宜，但更接近当前 Amazon 目标款，适合先进第一轮问样。',
-      points: [
-        `代表货盘：${supplier.bestItem?.title || '暂无代表货盘'}`,
-        priceLine,
-        supplier.searchNames.length ? `命中供给词：${supplier.searchNames.slice(0, 3).join(' / ')}` : '命中供给词不足',
-        ...supplier.reasonLines.slice(1, 4),
-      ].filter(Boolean),
-      links: [
-        supplier.offerUrl ? { label: '货源链接', url: supplier.offerUrl } : null,
-        supplier.storeUrl ? { label: '店铺入口', url: supplier.storeUrl } : null,
-      ].filter(Boolean),
-    };
-  });
+function buildSourceCandidatePoolCards(candidateRows) {
+  const cards = candidateRows.slice(0, 3).map((candidate, index) => ({
+    eyebrow: `推荐厂家 ${index + 1}`,
+    title: candidate.seller,
+    summary: candidate.whyMatch || '这家更接近当前目标款，适合先进入第一轮沟通。',
+    points: [
+      `代表货盘：${candidate.title || candidate.specSummary || '暂无代表货盘'}`,
+      `价格参考：${candidate.priceSummary || '待确认'}`,
+      candidate.matchedTerms?.length ? `命中搜索词：${candidate.matchedTerms.slice(0, 3).join(' / ')}` : '命中搜索词不足',
+      `MOQ：${candidate.moq || '待确认'}`,
+      ...(candidate.nextChecks || []).slice(0, 2),
+    ].filter(Boolean),
+    links: [candidate.url ? { label: '货源链接', url: candidate.url } : null].filter(Boolean),
+  }));
 
   cards.push({
     eyebrow: '筛厂标准',
-    title: '为什么不是谁便宜就推谁',
-    summary: '这轮推荐看的不是最低价，而是它能不能接住当前 Amazon 机会。',
+    title: '为什么不是谁便宜就先推谁',
+    summary: '这轮主看 Aoxia 详情和候选承接能力，不是只按低价排队。',
     points: [
-      '先看产品路线是否对得上，再看价格。',
-      '至少要能命中不止一个供给搜索词，避免只是碰巧搜出来。',
-      '能不能做扩散罩/负离子/高速这类主流配置，比单个报价更重要。',
-      '低价但路线不对的样本，只会把后面的打样和上架都带偏。',
+      '先看产品路线、MOQ、SKU 和属性字段，再看价格。',
+      'Aoxia 详情更完整的候选，优先级高于只在列表页出现的样本。',
+      '能不能接住目标规格和样品要求，比单个报价更重要。',
+      'Sorftime 只做补充证据，不直接决定主 shortlist。',
     ],
-    caution: '当前只直出货源详情链接，店铺入口这里用的是 1688 店铺检索入口，不是直接旺铺页。',
+    caution: '如果 Aoxia 详情不足，这轮结果会自动降级，不把列表页信号硬当成工厂结论。',
   });
 
   return cards.slice(0, 4);
 }
 
 function buildSourceSectionCopy(seed, benchmark, sourcing) {
+  const hasBenchmark = benchmark?.detail?.asin && benchmark.detail.asin !== seed.detail.asin;
+
   return {
-    products: '先把 Amazon 种子盘和基准盘摆在一起，明确我们要找的是哪种产品路线，而不是先在 1688 看谁便宜。',
+    products: hasBenchmark
+      ? '先把 Amazon 种子盘和基准盘摆在一起，明确我们要找的是哪种产品路线，而不是先在 1688 看谁便宜。'
+      : '当前先把 Amazon 种子盘摆出来，先按它的需求词和产品路线收第一轮供给样本，稳定基准盘后补。',
     modeFocus: '这里先回答“这个机会值不值得找厂”，再回答“该先找哪几家厂”。',
     candidates: '这里不是供给噪音池，而是第一轮更值得联系的供应商 shortlist。',
-    comparison: `这部分主要解释：为什么先拿 ${benchmark.detail.brand || benchmark.detail.asin} 定义目标款，再去筛供应商。`,
+    comparison: hasBenchmark
+      ? `这部分主要解释：为什么先拿 ${benchmark.detail.brand || benchmark.detail.asin} 定义目标款，再去筛供应商。`
+      : '这部分主要解释：在还没锁定稳定基准盘时，为什么先按种子 ASIN 自身的需求词和产品路线去筛供应商。',
     category: '类目环境决定这是不是值得做的市场，也决定后面该找什么水平的厂。',
     traffic: '这里同时看 Amazon 需求词和 1688 供给词，避免出现“有货但没人买”或“有人买但货盘不对”的错位。',
     reviews: '评论区的作用不是改文案，而是把真实负评翻译成找厂和打样条件。',
@@ -3027,28 +3094,33 @@ function buildSourceSectionCopy(seed, benchmark, sourcing) {
 
 function buildSourceComparisonRows(seed, benchmark, genericKeywordPair, sourcing, categoryStats) {
   const priceBand = sourcing.priceBand;
+  const hasBenchmark = benchmark?.detail?.asin && benchmark.detail.asin !== seed.detail.asin;
 
   return [
     {
       title: 'Amazon 目标价带',
       val1: formatCurrency(seed.detail.price),
-      val2: formatCurrency(benchmark.detail.price),
-      desc: '先用 Amazon 真实成交价定义目标款客单，供应侧只负责验证这条路能不能做。',
-      highlight: compareByBetter(seed, benchmark, (dataset) => dataset.detail.price, true),
+      val2: hasBenchmark ? formatCurrency(benchmark.detail.price) : '基准盘待补',
+      desc: hasBenchmark
+        ? '先用 Amazon 真实成交价定义目标款客单，供应侧只负责验证这条路能不能做。'
+        : '当前先用种子 ASIN 的真实成交价定义第一轮客单，等稳定基准盘补齐后再收紧目标款。',
+      highlight: hasBenchmark ? compareByBetter(seed, benchmark, (dataset) => dataset.detail.price, true) : undefined,
     },
     {
       title: 'Amazon 需求强度',
       val1: `${formatNumber(seed.detail.monthlySales)} / ${formatCurrency(seed.detail.monthlyRevenue)}`,
-      val2: `${formatNumber(benchmark.detail.monthlySales)} / ${formatCurrency(benchmark.detail.monthlyRevenue)}`,
-      desc: '两支样本都卖得动，说明先找供给是有意义的，不是在空找货。',
-      highlight: compareByBetter(seed, benchmark, (dataset) => dataset.detail.monthlySales),
+      val2: hasBenchmark ? `${formatNumber(benchmark.detail.monthlySales)} / ${formatCurrency(benchmark.detail.monthlyRevenue)}` : '基准盘待补',
+      desc: hasBenchmark
+        ? '两支样本都卖得动，说明先找供给是有意义的，不是在空找货。'
+        : '当前先确认种子 ASIN 自身的需求强度，后面再用稳定基准盘判断是不是同一路机会。',
+      highlight: hasBenchmark ? compareByBetter(seed, benchmark, (dataset) => dataset.detail.monthlySales) : undefined,
     },
     {
       title: '评论门槛',
       val1: `${formatNumber(seed.detail.reviewCount)} / ${seed.detail.rating?.toFixed(1) || '未知'}`,
-      val2: `${formatNumber(benchmark.detail.reviewCount)} / ${benchmark.detail.rating?.toFixed(1) || '未知'}`,
+      val2: hasBenchmark ? `${formatNumber(benchmark.detail.reviewCount)} / ${benchmark.detail.rating?.toFixed(1) || '未知'}` : '基准盘待补',
       desc: `类目高评论销量占比约 ${formatPercent(categoryStats?.highReviewsShare)}，所以找厂不能只看能不能出货，还要看能不能把质量做稳。`,
-      highlight: compareByBetter(seed, benchmark, (dataset) => dataset.detail.reviewCount),
+      highlight: hasBenchmark ? compareByBetter(seed, benchmark, (dataset) => dataset.detail.reviewCount) : undefined,
     },
     {
       title: '推荐厂家数',
@@ -3071,11 +3143,15 @@ function buildSourceComparisonRows(seed, benchmark, genericKeywordPair, sourcing
   ];
 }
 
-function buildSourceTrafficColumns(seed, benchmark, keywordSets, keywordIntel, sourcing) {
-  const detailPoints = keywordIntel.slice(0, 3).map((item) => {
-    const detail = item.detail;
-    return `${detail.keyword || item.keyword}: 月搜 ${formatNumber(detail.monthlyVolume)} / CPC ${formatCurrency(detail.cpc)} / 结果数 ${formatNumber(detail.resultCount)}`;
-  });
+function buildSourceTrafficColumns(seed, benchmark, keywordSets, keywordIntel, sourcing, sourceReport) {
+  const aoxiaTerms = [...new Set(sourceReport.searchPath
+    .filter((item) => String(item.source || '').includes('Aoxia'))
+    .map((item) => item.term)
+    .filter(Boolean))];
+  const sorftimeTerms = [...new Set(sourceReport.searchPath
+    .filter((item) => String(item.source || '').includes('Sorftime'))
+    .map((item) => item.term)
+    .filter(Boolean))];
 
   return [
     {
@@ -3086,10 +3162,10 @@ function buildSourceTrafficColumns(seed, benchmark, keywordSets, keywordIntel, s
         : keywordSets.generic.slice(0, 4).map((item) => item.keyword),
     },
     {
-      eyebrow: '1688 搜索词',
-      title: sourcing.searchNames.length ? '当前实际跑过的供给词' : '供给词不足',
+      eyebrow: 'Aoxia 搜索词',
+      title: aoxiaTerms.length ? '当前实际跑过的主寻源词' : 'Aoxia 搜索词不足',
       accent: true,
-      points: sourcing.searchNames.length ? sourcing.searchNames : ['当前没有稳定的供给搜索词。'],
+      points: aoxiaTerms.length ? aoxiaTerms : ['当前还没有稳定的 Aoxia 搜索词。'],
     },
     {
       eyebrow: '要找什么货',
@@ -3099,30 +3175,34 @@ function buildSourceTrafficColumns(seed, benchmark, keywordSets, keywordIntel, s
         : ['先围绕扩散罩、负离子、高速这类主流配置去找厂。'],
     },
     {
-      eyebrow: '供应商覆盖',
-      title: sourcing.recommendedSuppliers.length ? '先联系 shortlist，不先泛问' : 'shortlist 还不够',
-      points: sourcing.recommendedSuppliers.length
-        ? sourcing.recommendedSuppliers.map((supplier) => `${supplier.seller}: ${supplier.searchNames.slice(0, 2).join(' / ') || '已进 shortlist'}`)
-        : ['当前还没有足够可信的厂家 shortlist。'],
+      eyebrow: '补充证据',
+      title: sorftimeTerms.length ? 'Sorftime 侧补充过这些供给词' : 'Sorftime 仅做 Amazon / 关键词补充',
+      points: sorftimeTerms.length
+        ? sorftimeTerms
+        : ['当前这轮主判断来自 Aoxia 1688，Sorftime 主要补 Amazon 和搜索词证据。'],
     },
   ];
 }
 
-function buildSourceTrafficInsight(seed, benchmark, categoryStats, keywordIntel, sourcing) {
+function buildSourceTrafficInsight(seed, benchmark, categoryStats, keywordIntel, sourcing, sourceReport) {
   const topKeyword = keywordIntel[0]?.detail;
   const priceBand = sourcing.priceBand;
-  const firstSupplier = sourcing.recommendedSuppliers[0];
+  const firstSupplier = sourceReport.shortlist[0];
+  const secondSupplier = sourceReport.shortlist[1];
+  const hasAoxia = sourceReport.providerTrace.some((item) => item.provider === 'Aoxia MCP' && item.status !== 'unavailable');
 
   return [
     `先看机会：${categoryStats?.name || '当前类目'} Top100 月销量约 ${formatNumber(categoryStats?.top100Sales)}，中位价 ${formatCurrency(categoryStats?.medianPrice)}。`,
     topKeyword
       ? `再看需求词：${topKeyword.keyword} 月搜索量约 ${formatNumber(topKeyword.monthlyVolume)}，说明这条路本身有人找。`
       : '再看需求词：当前核心词样本不足。',
-    priceBand
-      ? `再看供给：1688 当前直机供给参考带约 ¥${priceBand.min} - ¥${priceBand.max}，已经能拉出第一轮 shortlist。`
-      : '再看供给：当前还没形成稳定的供给参考带。',
+    hasAoxia
+      ? '再看供给：这轮 1688 主判断优先看 Aoxia 返回的候选与详情字段。'
+      : priceBand
+        ? `再看供给：Aoxia 不可用，当前只拿 Sorftime 供给参考带 ¥${priceBand.min} - ¥${priceBand.max} 做补位。`
+        : '再看供给：当前还没形成稳定的 1688 详情候选。',
     firstSupplier
-      ? `所以这次不是继续泛搜，而是先联系 ${firstSupplier.seller}${sourcing.recommendedSuppliers[1] ? `、${sourcing.recommendedSuppliers[1].seller}` : ''}，验证它们能不能接住目标款。`
+      ? `所以这次不是继续泛搜，而是先联系 ${firstSupplier.seller}${secondSupplier ? `、${secondSupplier.seller}` : ''}，验证它们能不能接住目标款。`
       : '所以这次还不该急着大面积询盘，先把 shortlist 再收紧。',
   ].join(' ');
 }
@@ -3130,6 +3210,36 @@ function buildSourceTrafficInsight(seed, benchmark, categoryStats, keywordIntel,
 function buildSourceReviewBlocks(seed, benchmark) {
   const seedNegatives = summarizeReviewThemes(seed.negativeReviews);
   const benchmarkNegatives = summarizeReviewThemes(benchmark.negativeReviews);
+  const hasBenchmark = benchmark?.detail?.asin && benchmark.detail.asin !== seed.detail.asin;
+
+  if (!hasBenchmark) {
+    return [
+      {
+        eyebrow: '种子 ASIN',
+        title: seed.detail.brand || seed.detail.asin,
+        summary: '这部分不是为了改 listing，而是为了把 Amazon 负评翻译成筛样和打样条件。',
+        positives: summarizeReviewThemes(seed.positiveReviews).map((theme) => theme.label),
+        negatives: seedNegatives.map((theme) => theme.label),
+        opportunities: [
+          '把高频负评直接写进样品验收标准，不要等上架后再踩坑。',
+          '附件、过热、噪音和耐久这些问题，打样阶段就要先测。',
+        ],
+        evidence: buildReviewEvidence([...summarizeReviewThemes(seed.positiveReviews), ...seedNegatives]),
+      },
+      {
+        eyebrow: 'Amazon 基准盘',
+        title: '待补稳定基准盘',
+        summary: '当前还没有锁定稳定基准盘，所以这一步先以种子 ASIN 的评论和需求词做轻量寻源约束。',
+        positives: ['先补稳定竞对或主流款', '再把两边评论交叉对照'],
+        negatives: ['当前不能把页面相似直接当成承接能力结论', '基准盘未补齐前，不放大询盘面'],
+        opportunities: [
+          '先拿第一页候选和商家回复收窄产品路线，再补 Amazon 基准盘。',
+          '补到稳定基准盘后，再回来看哪些评论点必须被样品验证。',
+        ],
+        evidence: [],
+      },
+    ];
+  }
 
   return [
     {
@@ -3159,16 +3269,17 @@ function buildSourceReviewBlocks(seed, benchmark) {
   ];
 }
 
-function buildSourceActionCards(seed, benchmark, keywordSets, sourcing, categoryStats) {
+function buildSourceActionCards(seed, benchmark, keywordSets, sourceReport, categoryStats) {
   const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || '核心词';
-  const topSupplier = sourcing.recommendedSuppliers[0];
+  const topSupplier = sourceReport.shortlist[0];
+  const secondSupplier = sourceReport.shortlist[1];
 
   return [
     {
       priority: 'P0',
       title: '先定目标款，再联系 shortlist',
       desc: topSupplier
-        ? `第一轮先联系 ${topSupplier.seller}${sourcing.recommendedSuppliers[1] ? `、${sourcing.recommendedSuppliers[1].seller}` : ''}，不要把所有卖家都问一遍。`
+        ? `第一轮先联系 ${topSupplier.seller}${secondSupplier ? `、${secondSupplier.seller}` : ''}，不要把所有卖家都问一遍。`
         : '当前先不要大面积询盘，先把推荐厂家 shortlist 做出来。',
       accentClass: 'border-t-red-500',
     },
@@ -3193,15 +3304,18 @@ function buildSourceActionCards(seed, benchmark, keywordSets, sourcing, category
   ];
 }
 
-function buildSourceRoadmapSteps(seed, benchmark, keywordSets, sourcing) {
+function buildSourceRoadmapSteps(seed, benchmark, keywordSets, sourceReport) {
   const scenarioKeyword = keywordSets.scenario[0]?.keyword || keywordSets.generic[0]?.keyword || '核心词';
-  const topSuppliers = sourcing.recommendedSuppliers.slice(0, 2).map((item) => item.seller).filter(Boolean);
+  const topSuppliers = sourceReport.shortlist.slice(0, 2).map((item) => item.seller).filter(Boolean);
+  const hasBenchmark = benchmark?.detail?.asin && benchmark.detail.asin !== seed.detail.asin;
 
   return [
     {
       phase: 'Step 1',
       title: '先定义目标款',
-      desc: `先围绕 ${scenarioKeyword} 和 Amazon 基准盘，把要找的结构、附件和体验写清楚，再去找厂。`,
+      desc: hasBenchmark
+        ? `先围绕 ${scenarioKeyword} 和 Amazon 基准盘，把要找的结构、附件和体验写清楚，再去找厂。`
+        : `先围绕 ${scenarioKeyword} 和种子 ASIN 自身需求词，把要找的结构、附件和体验写清楚，再去找厂。`,
     },
     {
       phase: 'Step 2',
@@ -3271,7 +3385,11 @@ function collectSourceSearchNames(detail, keywordSets) {
     ...chineseHints,
   ].filter(Boolean);
 
-  return [...new Set(names)].slice(0, 4);
+  const cleanedNames = [...new Set(names)]
+    .map((name) => normalizeKeyword(name))
+    .filter((name) => name && name !== 'null' && name !== 'undefined');
+
+  return cleanedNames.length > 0 ? cleanedNames.slice(0, 4) : ['hair dryer'];
 }
 
 async function fetchSourcingIntel(searchNames, seedDetail, benchmarkDetail, keywordSets) {
@@ -3296,6 +3414,1311 @@ async function fetchSourcingIntel(searchNames, seedDetail, benchmarkDetail, keyw
   );
 
   return analyzeSourcing(searchNames, batches.flat(), seedDetail, benchmarkDetail, keywordSets);
+}
+
+function truncateText(text, maxLength = 180) {
+  const value = String(text || '').trim();
+  if (!value) {
+    return '';
+  }
+
+  return value.length > maxLength ? `${value.slice(0, Math.max(0, maxLength - 1))}…` : value;
+}
+
+function parseMaybeJsonBlock(text, fallback = null) {
+  const direct = safeJsonParse(text, null);
+  if (direct !== null) {
+    return direct;
+  }
+
+  const source = String(text || '').trim();
+  if (!source) {
+    return fallback;
+  }
+
+  const matches = [
+    source.match(/(\[[\s\S]*\])/),
+    source.match(/(\{[\s\S]*\})/),
+  ]
+    .map((match) => match?.[1])
+    .filter(Boolean);
+
+  for (const chunk of matches) {
+    const parsed = safeJsonParse(chunk, null);
+    if (parsed !== null) {
+      return parsed;
+    }
+  }
+
+  return fallback;
+}
+
+function normalizeLooseKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[\s_\-:/\\()[\]{}"'`|]+/g, '');
+}
+
+function pickRecordValue(record, aliases) {
+  if (!record || typeof record !== 'object') {
+    return null;
+  }
+
+  const entries = Object.entries(record);
+  const keyMap = new Map(entries.map(([key, value]) => [normalizeLooseKey(key), value]));
+
+  for (const alias of aliases) {
+    const exact = keyMap.get(normalizeLooseKey(alias));
+    if (exact !== undefined && exact !== null && exact !== '') {
+      return exact;
+    }
+  }
+
+  for (const alias of aliases) {
+    const normalizedAlias = normalizeLooseKey(alias);
+    const partial = entries.find(([key, value]) => {
+      const normalizedKey = normalizeLooseKey(key);
+      return (
+        value !== undefined &&
+        value !== null &&
+        value !== '' &&
+        (normalizedKey.includes(normalizedAlias) || normalizedAlias.includes(normalizedKey))
+      );
+    });
+
+    if (partial?.[1] !== undefined && partial?.[1] !== null && partial?.[1] !== '') {
+      return partial[1];
+    }
+  }
+
+  return null;
+}
+
+function toReadableText(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => toReadableText(item)).filter(Boolean).join(' / ');
+  }
+
+  if (typeof value === 'object') {
+    return Object.entries(value)
+      .map(([key, item]) => `${key}:${toReadableText(item)}`)
+      .filter(Boolean)
+      .join(' / ');
+  }
+
+  return String(value).trim();
+}
+
+function toStringList(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => toReadableText(item)).filter(Boolean);
+  }
+
+  const text = toReadableText(value);
+  if (!text) {
+    return [];
+  }
+
+  return text
+    .split(/[\n\r;,，；、]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function coerceArrayRecords(value) {
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => coerceArrayRecords(item));
+  }
+
+  if (!value || typeof value !== 'object') {
+    return [];
+  }
+
+  const collectionKeys = [
+    'items',
+    'itemList',
+    'list',
+    'data',
+    'records',
+    'result',
+    'results',
+    'productList',
+    'offerList',
+    'products',
+    'offers',
+  ];
+
+  for (const key of collectionKeys) {
+    const nested = value[key];
+    if (Array.isArray(nested)) {
+      return nested.flatMap((item) => coerceArrayRecords(item));
+    }
+  }
+
+  return [value];
+}
+
+function extractOfferId(value, fallbackUrl = '') {
+  const direct = toReadableText(value);
+  if (direct && /^\d{6,}$/.test(direct)) {
+    return direct;
+  }
+
+  const match = String(direct || fallbackUrl || '').match(/(\d{6,})/);
+  return match?.[1] || '';
+}
+
+function build1688OfferUrl(offerId, fallbackUrl = '') {
+  if (fallbackUrl) {
+    return fallbackUrl;
+  }
+
+  return offerId ? `https://detail.1688.com/offer/${offerId}.html` : '';
+}
+
+function normalizeAoxiaSearchItem(record, matchedSearchName, sourceTool = 'keywordSearchProduct') {
+  const url = toReadableText(
+    pickRecordValue(record, ['url', '链接', '商品链接', 'detailUrl', 'offerUrl', 'productUrl', 'link']),
+  );
+  const title = toReadableText(
+    pickRecordValue(record, ['标题', '商品标题', 'title', 'productTitle', 'offerTitle', 'name']),
+  );
+  const seller = toReadableText(
+    pickRecordValue(record, ['卖家', '店铺', '店铺名称', 'seller', 'shopName', 'storeName', 'companyName']),
+  );
+  const image = toReadableText(
+    pickRecordValue(record, ['主图', '图片', 'image', 'img', 'picUrl', 'imageUrl']),
+  );
+  const offerId = extractOfferId(
+    pickRecordValue(record, ['商品id', '商品ID', 'offerId', 'productId', 'itemId', 'id']),
+    url,
+  );
+  const price = toNumber(
+    pickRecordValue(record, ['价格', 'price', 'salePrice', '区间价', '参考价', 'priceInfo']),
+  );
+  const moqText = toReadableText(
+    pickRecordValue(record, ['起批量', 'moq', 'MOQ', 'minOrder', 'minimumOrderQuantity']),
+  );
+
+  return {
+    offerId,
+    title,
+    seller,
+    url: build1688OfferUrl(offerId, url),
+    image,
+    price,
+    moqText,
+    matchedSearchName,
+    sourceTool,
+    raw: record,
+  };
+}
+
+function normalizeAoxiaDetail(detailRecord, fallbackItem = {}) {
+  const url = toReadableText(
+    pickRecordValue(detailRecord, ['url', '链接', '商品链接', 'detailUrl', 'offerUrl', 'productUrl', 'link']),
+  );
+  const offerId = extractOfferId(
+    pickRecordValue(detailRecord, ['商品id', '商品ID', 'offerId', 'productId', 'itemId', 'id']),
+    url || fallbackItem.url,
+  );
+  const attributes = toStringList(
+    pickRecordValue(detailRecord, ['属性', 'attributes', 'property', 'propertyList', 'skuAttr', 'spec']),
+  );
+  const skuValues = toStringList(
+    pickRecordValue(detailRecord, ['sku', 'SKU', 'skuList', '规格', 'specifications', 'specList']),
+  );
+  const images = toStringList(
+    pickRecordValue(detailRecord, ['图片', 'images', 'imageList', '图集', '主图']),
+  );
+
+  return {
+    offerId,
+    title:
+      toReadableText(
+        pickRecordValue(detailRecord, ['标题', '商品标题', 'title', 'productTitle', 'offerTitle', 'name']),
+      ) || fallbackItem.title ||
+      '',
+    seller:
+      toReadableText(
+        pickRecordValue(detailRecord, ['卖家', '店铺', 'seller', 'shopName', 'storeName', 'companyName']),
+      ) || fallbackItem.seller ||
+      '',
+    url: build1688OfferUrl(offerId, url || fallbackItem.url),
+    images: images.length ? images : fallbackItem.image ? [fallbackItem.image] : [],
+    moqText:
+      toReadableText(
+        pickRecordValue(detailRecord, ['起批量', 'MOQ', 'moq', 'minOrder', 'minimumOrderQuantity']),
+      ) || fallbackItem.moqText ||
+      '',
+    attributeText: attributes.join(' / '),
+    skuText: skuValues.join(' / '),
+    attributes,
+    skuValues,
+    priceText: toReadableText(
+      pickRecordValue(detailRecord, ['价格', 'price', 'salePrice', '区间价', '参考价', 'priceInfo']),
+    ),
+    platformHints: toStringList(
+      pickRecordValue(detailRecord, ['主要下游平台', '平台', 'platform', 'downstreamPlatform']),
+    ),
+    raw: detailRecord,
+  };
+}
+
+function normalizeAoxiaToolItems(text, matchedSearchName, sourceTool) {
+  const parsed = parseMaybeJsonBlock(text, []);
+  return coerceArrayRecords(parsed)
+    .map((record) => normalizeAoxiaSearchItem(record, matchedSearchName, sourceTool))
+    .filter((item) => item.title || item.offerId);
+}
+
+function buildAoxiaSearchTerms(seedDetail, benchmarkDetail, sorftimeSearchNames, keywordSets) {
+  const genericKeyword = keywordSets.generic[0]?.keyword || '';
+  const scenarioKeyword = keywordSets.scenario[0]?.keyword || '';
+  const categoryHint = normalizeKeyword(seedDetail.category || seedDetail.subCategoryName || '');
+  const titleTokens = tokenize(`${seedDetail.title || ''} ${benchmarkDetail.title || ''}`)
+    .filter((token) => token.length >= 3)
+    .slice(0, 6);
+  const numericAnchors = `${seedDetail.title || ''} ${seedDetail.description || ''}`.match(
+    /\b\d+(?:\.\d+)?\s?(?:mm|cm|inch|in|\"|w|ml|oz|v|g|kg)\b/gi,
+  ) || [];
+
+  const candidates = [
+    ...sorftimeSearchNames,
+    scenarioKeyword,
+    genericKeyword,
+    categoryHint,
+    titleTokens.slice(0, 3).join(' '),
+    numericAnchors[0] ? `${numericAnchors[0]} ${categoryHint}`.trim() : '',
+  ]
+    .map((item) => normalizeKeyword(item))
+    .filter(Boolean);
+
+  return [...new Set(candidates)].slice(0, 6);
+}
+
+function classifySearchPrecision(term) {
+  const score =
+    tokenize(term).length +
+    (/\d/.test(term) ? 2 : 0) +
+    (/跨境|出口|工厂|厂家|oem|odm|美规|欧规|定制|logo/i.test(term) ? 1 : 0);
+
+  if (score >= 4) {
+    return 'high';
+  }
+  if (score >= 2) {
+    return 'medium';
+  }
+
+  return 'low';
+}
+
+function inferToolArgName(toolDef, aliases, fallback) {
+  const properties = Object.keys(toolDef?.inputSchema?.properties || {});
+  if (!properties.length) {
+    return fallback;
+  }
+
+  const normalizedProps = properties.map((key) => ({ key, normalized: normalizeLooseKey(key) }));
+  for (const alias of aliases) {
+    const normalizedAlias = normalizeLooseKey(alias);
+    const exact = normalizedProps.find((item) => item.normalized === normalizedAlias);
+    if (exact) {
+      return exact.key;
+    }
+  }
+
+  for (const alias of aliases) {
+    const normalizedAlias = normalizeLooseKey(alias);
+    const partial = normalizedProps.find(
+      (item) => item.normalized.includes(normalizedAlias) || normalizedAlias.includes(item.normalized),
+    );
+    if (partial) {
+      return partial.key;
+    }
+  }
+
+  return fallback;
+}
+
+function buildKeywordSearchArgs(toolDef, term, page = 1) {
+  const args = {};
+  args[inferToolArgName(toolDef, ['keyword', 'query', 'searchName', 'searchKeyword'], 'keyword')] = term;
+  const pageKey = inferToolArgName(toolDef, ['page', 'pageNo', 'pageNum', 'currentPage'], '');
+  const sizeKey = inferToolArgName(toolDef, ['pageSize', 'size', 'limit'], '');
+  if (pageKey) {
+    args[pageKey] = page;
+  }
+  if (sizeKey) {
+    args[sizeKey] = 20;
+  }
+  return args;
+}
+
+function buildImageSearchArgs(toolDef, imageUrl, page = 1) {
+  const args = {};
+  args[inferToolArgName(toolDef, ['imageUrl', 'url', 'image', 'imgUrl', 'image_url'], 'imageUrl')] = imageUrl;
+  const pageKey = inferToolArgName(toolDef, ['page', 'pageNo', 'pageNum', 'currentPage'], '');
+  if (pageKey) {
+    args[pageKey] = page;
+  }
+  return args;
+}
+
+function buildProductIdArgs(toolDef, offerId, page = 1) {
+  const args = {};
+  args[inferToolArgName(toolDef, ['productId', 'offerId', 'itemId', 'id', 'productID'], 'productId')] = offerId;
+  const pageKey = inferToolArgName(toolDef, ['page', 'pageNo', 'pageNum', 'currentPage'], '');
+  if (pageKey) {
+    args[pageKey] = page;
+  }
+  return args;
+}
+
+async function callAoxiaToolWithVariants(aoxia, toolName, variants) {
+  const errors = [];
+
+  for (const args of variants) {
+    try {
+      return await aoxia.callTool(toolName, args);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  throw new Error(`${toolName} 调用失败：${errors.join('；')}`);
+}
+
+function dedupeAoxiaItems(items) {
+  const seen = new Map();
+
+  items.forEach((item) => {
+    const key = item.offerId || item.url || `${item.title}-${item.seller}`;
+    if (!key) {
+      return;
+    }
+
+    const current = seen.get(key);
+    if (!current) {
+      seen.set(key, {
+        ...item,
+        matchedTerms: item.matchedSearchName ? [item.matchedSearchName] : [],
+        sourceTools: item.sourceTool ? [item.sourceTool] : [],
+      });
+      return;
+    }
+
+    current.price = current.price ?? item.price;
+    current.image = current.image || item.image;
+    current.url = current.url || item.url;
+    current.seller = current.seller || item.seller;
+    current.title = current.title || item.title;
+    current.moqText = current.moqText || item.moqText;
+    if (item.matchedSearchName && !current.matchedTerms.includes(item.matchedSearchName)) {
+      current.matchedTerms.push(item.matchedSearchName);
+    }
+    if (item.sourceTool && !current.sourceTools.includes(item.sourceTool)) {
+      current.sourceTools.push(item.sourceTool);
+    }
+  });
+
+  return [...seen.values()];
+}
+
+function buildSourceAnchors(seedDetail, benchmarkDetail) {
+  const titleBlob = `${seedDetail.title || ''} ${benchmarkDetail.title || ''}`;
+  const numericAnchors = [
+    ...new Set(
+      (titleBlob.match(/\b\d+(?:\.\d+)?\s?(?:mm|cm|inch|in|\"|w|ml|oz|v|g|kg)\b/gi) || []).map((item) =>
+        normalizeKeyword(item),
+      ),
+    ),
+  ];
+  const colorAnchors = [
+    ...new Set(
+      (titleBlob.match(
+        /\b(?:black|white|silver|grey|gray|gold|red|blue|green|pink|transparent|clear)\b/gi,
+      ) || []).map((item) => normalizeKeyword(item)),
+    ),
+  ];
+
+  return {
+    numericAnchors,
+    colorAnchors,
+  };
+}
+
+function scoreAoxiaCandidate(item, detail, sourceTargets, directPriceBand, anchors) {
+  const title = normalizeKeyword(item.title || '');
+  const featureHits = extractSourceFeatureHits(item.title || '', sourceTargets);
+  const numericHits = anchors.numericAnchors.filter((anchor) => anchor && title.includes(anchor)).length;
+  const colorHits = anchors.colorAnchors.filter((anchor) => anchor && title.includes(anchor)).length;
+  const termCoverage = item.matchedTerms?.length || 0;
+  const detailCompleteness =
+    (detail?.attributeText ? 1 : 0) + (detail?.skuText ? 1 : 0) + (detail?.moqText ? 1 : 0);
+  const moqValue = toNumber(detail?.moqText || item.moqText);
+  const customizationCue = /跨境|出口|源头|工厂|厂家|定制|logo|oem|odm|包装|现货/i.test(
+    `${item.title || ''} ${detail?.attributeText || ''} ${(detail?.platformHints || []).join(' ')}`,
+  );
+  const riskFlags = [];
+
+  if (/配件|替换|维修|检测|认证|服务|链接|教程|说明书|贴纸|赠品/i.test(item.title || '')) {
+    riskFlags.push('疑似配件或非主货');
+  }
+  if (/dyson|laifen|airwrap|shark/i.test(item.title || '')) {
+    riskFlags.push('标题含品牌或合规风险词');
+  }
+  if (!detail?.attributeText && !detail?.skuText) {
+    riskFlags.push('详情字段不足');
+  }
+  if (moqValue !== null && moqValue >= 100) {
+    riskFlags.push('MOQ 偏高');
+  }
+  if (moqValue === null) {
+    riskFlags.push('MOQ 未明');
+  }
+
+  const score =
+    50 +
+    featureHits.length * 6 +
+    numericHits * 5 +
+    colorHits * 2 +
+    termCoverage * 4 +
+    detailCompleteness * 4 +
+    scoreSourcePriceFit(item.price, directPriceBand) * 3 +
+    (customizationCue ? 5 : 0) -
+    riskFlags.length * 4 -
+    (moqValue !== null && moqValue <= 5 ? -2 : 0);
+
+  return {
+    score: Number(score.toFixed(1)),
+    featureHits,
+    riskFlags,
+    termCoverage,
+    detailCompleteness,
+    customizationCue,
+    moqValue,
+  };
+}
+
+function formatSourcePriceSummary(item, detail) {
+  const priceText = detail?.priceText || '';
+  if (item.price !== null && item.price !== undefined) {
+    return `约 ¥${item.price}${priceText && !priceText.includes(String(item.price)) ? ` / ${truncateText(priceText, 48)}` : ''}`;
+  }
+  if (priceText) {
+    return truncateText(priceText, 48);
+  }
+
+  return '价格待确认';
+}
+
+function formatSourceSpecSummary(detail, item) {
+  const parts = [
+    detail?.attributeText,
+    detail?.skuText,
+    item?.moqText ? `起批：${item.moqText}` : '',
+  ]
+    .filter(Boolean)
+    .map((part) => truncateText(part, 72));
+
+  return parts.length ? parts.slice(0, 2).join(' / ') : truncateText(item?.title || '规格信息不足', 96);
+}
+
+function resolveSourceCandidateSeller(candidate, detail) {
+  const seller = detail?.seller || candidate?.seller || '';
+  if (seller && seller !== '未知供应商') {
+    return seller;
+  }
+
+  const offerId = candidate?.offerId || detail?.offerId || '';
+  return offerId ? `1688 候选 ${offerId}` : '1688 候选';
+}
+
+function buildSourceDecisionLabel({ score, hasDetail, riskFlags }) {
+  if (score >= 86 && hasDetail && riskFlags.length <= 1) {
+    return '可打样验证';
+  }
+
+  return '可继续沟通';
+}
+
+function buildSourceCandidateRows(fusedCandidates, sourceTargets, directPriceBand, anchors) {
+  return fusedCandidates
+    .map((candidate) => {
+      const detail = candidate.detail || null;
+      const scored = scoreAoxiaCandidate(candidate, detail, sourceTargets, directPriceBand, anchors);
+      const whyMatch = [
+        scored.featureHits.length ? `命中目标特征：${scored.featureHits.slice(0, 3).join(' / ')}` : '',
+        candidate.matchedTerms?.length ? `至少命中 ${candidate.matchedTerms.length} 个搜索词` : '',
+        scored.customizationCue ? '标题或详情里有跨境 / 定制 / 工厂线索' : '',
+      ]
+        .filter(Boolean)
+        .slice(0, 2)
+        .join('；') || '有基础相似度，但仍需人工二筛。';
+
+      let track = '观察备选';
+      if (scored.moqValue !== null && scored.moqValue <= 5) {
+        track = '低 MOQ 打样轨';
+      } else if (scored.score >= 84) {
+        track = '高匹配工厂轨';
+      }
+
+      return {
+        offerId: candidate.offerId || '未知',
+        seller: resolveSourceCandidateSeller(candidate, detail),
+        fitScore: scored.score,
+        matchedTerms: candidate.matchedTerms || [],
+        specSummary: formatSourceSpecSummary(detail, candidate),
+        moq: detail?.moqText || candidate.moqText || '待商家确认',
+        priceSummary: formatSourcePriceSummary(candidate, detail),
+        whyMatch,
+        riskFlags: scored.riskFlags,
+        track,
+        image: detail?.images?.[0] || candidate.image || '',
+        url: detail?.url || candidate.url || '',
+        title: detail?.title || candidate.title || '',
+        decisionLabel: buildSourceDecisionLabel({
+          score: scored.score,
+          hasDetail: Boolean(detail),
+          riskFlags: scored.riskFlags,
+        }),
+        nextChecks: buildNextChecks(detail, scored),
+      };
+    })
+    .sort((left, right) => right.fitScore - left.fitScore)
+    .slice(0, 8);
+}
+
+function buildNextChecks(detail, scored) {
+  const checks = [
+    '确认目标 SKU 的规格、材质和配件是否和 Amazon 目标款一致',
+    '确认打样 MOQ、样品交期和是否支持包装 / logo / 标签',
+  ];
+
+  if (scored.moqValue !== null && scored.moqValue >= 50) {
+    checks.push('确认样单是否可降 MOQ，不要直接按量产门槛推进');
+  }
+
+  if (!detail?.attributeText || !detail?.skuText) {
+    checks.push('补齐详情页 SKU / 属性字段，避免只看列表标题做判断');
+  }
+
+  return checks.slice(0, 3);
+}
+
+function buildShortlistFromCandidateRows(candidateRows) {
+  return candidateRows.slice(0, 4).map((row) => ({
+    seller: row.seller,
+    offerId: row.offerId,
+    decisionLabel: row.decisionLabel,
+    reasonLines: [
+      `匹配度 ${row.fitScore}，主轨道为 ${row.track}`,
+      row.whyMatch,
+      row.riskFlags.length ? `当前主要风险：${row.riskFlags.slice(0, 2).join(' / ')}` : '当前没有看到明显致命风险，但仍要补样品验证。',
+    ],
+    nextChecks: row.nextChecks,
+  }));
+}
+
+function buildSourceVerdictPayload(candidateRows, shortlist, providerTrace, fallbackNote = '') {
+  const topCandidate = candidateRows[0];
+  const hasAoxia = providerTrace.some((item) => item.provider === 'Aoxia MCP' && item.status !== 'unavailable');
+
+  return {
+    summary: shortlist.length
+      ? `${hasAoxia ? 'Aoxia 1688 MCP' : 'Sorftime 补位结果'} 已形成第一轮 shortlist，先联系 ${shortlist
+          .slice(0, 2)
+          .map((item) => item.seller)
+          .join('、')}。${fallbackNote}`.trim()
+      : `当前还没有稳定 shortlist，先继续收紧目标款和搜索词。${fallbackNote}`.trim(),
+    highlights: [
+      topCandidate ? `最高匹配候选当前打到 ${topCandidate.fitScore} 分，主轨道是 ${topCandidate.track}。` : '当前还没有高匹配候选。',
+      shortlist.length
+        ? `已筛出 ${shortlist.length} 家更值得先沟通的候选。`
+        : '还不建议大面积询盘，先继续做关键词纠偏和详情补证据。',
+      hasAoxia
+        ? 'Aoxia 已补到 1688 详情字段，这轮 shortlist 以 Aoxia 候选为主。'
+        : '本次未拿到 Aoxia 详情字段，Sorftime 只作为补位证据。',
+    ],
+    recommendedTracks: [
+      candidateRows.find((item) => item.track === '低 MOQ 打样轨')
+        ? `低 MOQ 打样轨：优先联系 ${candidateRows.find((item) => item.track === '低 MOQ 打样轨').seller}`
+        : '低 MOQ 打样轨：当前还没有明显更优的低门槛样品候选',
+      candidateRows.find((item) => item.track === '高匹配工厂轨')
+        ? `高匹配工厂轨：同步跟进 ${candidateRows.find((item) => item.track === '高匹配工厂轨').seller}`
+        : '高匹配工厂轨：当前还没有足够清晰的量产向候选',
+    ],
+  };
+}
+
+function readNumericTokens(text) {
+  return [...String(text || '').matchAll(/-?\d+(?:\.\d+)?/g)]
+    .map((match) => Number(match[0]))
+    .filter((value) => Number.isFinite(value));
+}
+
+function formatCustomizationNeeds(customizationNeeds = []) {
+  const activeNeeds = customizationNeeds.filter((item) => item && item !== 'none');
+  if (activeNeeds.length === 0) {
+    return '标准款优先，无需额外定制';
+  }
+
+  const labelMap = {
+    logo: 'Logo',
+    packaging: '包装',
+    color: '颜色',
+    spec: '规格',
+  };
+
+  return activeNeeds.map((item) => labelMap[item] || item).join(' / ');
+}
+
+function uniqText(items) {
+  return [...new Set(items.map((item) => String(item || '').trim()).filter(Boolean))];
+}
+
+function applyBuyerBriefToCandidateRows(candidateRows, buyerBrief) {
+  const resolvedBrief = resolveSourceBuyerBrief(buyerBrief);
+  const customizationNeeds = resolvedBrief.customizationNeeds.filter((item) => item !== 'none');
+
+  return candidateRows
+    .map((row) => {
+      const priceValues = readNumericTokens(row.priceSummary);
+      const minPrice = priceValues.length ? Math.min(...priceValues) : null;
+      const moqValues = readNumericTokens(row.moq);
+      const moqValue = moqValues.length ? moqValues[0] : null;
+      let fitScore = row.fitScore;
+      const riskFlags = [...row.riskFlags];
+      const nextChecks = [...row.nextChecks];
+
+      if (resolvedBrief.maxPurchasePrice !== null && minPrice !== null && minPrice > resolvedBrief.maxPurchasePrice) {
+        riskFlags.push('超出买家采购价上限');
+        nextChecks.unshift(`先确认是否能把拿货价压到 ¥${resolvedBrief.maxPurchasePrice} 以内。`);
+        fitScore -= 8;
+      }
+
+      if (moqValue === null && resolvedBrief.acceptableMoq !== null) {
+        riskFlags.push('MOQ 待商家确认');
+        fitScore -= 2;
+      } else if (resolvedBrief.acceptableMoq !== null && moqValue > resolvedBrief.acceptableMoq) {
+        riskFlags.push('MOQ 高于买家可接受门槛');
+        nextChecks.push(`买家可接受 MOQ 为 ${resolvedBrief.acceptableMoq} 件，先确认是否可降。`);
+        fitScore -= 6;
+      }
+
+      if (customizationNeeds.length > 0) {
+        nextChecks.push(`确认是否支持 ${formatCustomizationNeeds(customizationNeeds)}。`);
+      }
+
+      return {
+        ...row,
+        fitScore: Number(Math.max(fitScore, 0).toFixed(1)),
+        moq: moqValue === null ? '待商家确认' : row.moq,
+        riskFlags: uniqText(riskFlags).slice(0, 5),
+        nextChecks: uniqText(nextChecks).slice(0, 4),
+      };
+    })
+    .sort((left, right) => right.fitScore - left.fitScore)
+    .slice(0, 8);
+}
+
+function buildBuyerContextPayload(buyerBrief, shortlist) {
+  const resolvedBrief = resolveSourceBuyerBrief(buyerBrief);
+  const primarySuppliers = shortlist.slice(0, 2).map((item) => item.seller).filter(Boolean);
+  return {
+    summaryLines: [
+      `目标售价区间：${formatBuyerRange(resolvedBrief.targetPriceMin, resolvedBrief.targetPriceMax, '$')}`,
+      `采购价上限：${formatBuyerSingleValue(resolvedBrief.maxPurchasePrice, '¥')}；首批数量：${formatBuyerSingleValue(resolvedBrief.firstOrderQty, '', ' 件')}；可接受 MOQ：${formatBuyerSingleValue(resolvedBrief.acceptableMoq, '', ' 件')}`,
+      `定制需求：${formatCustomizationNeeds(resolvedBrief.customizationNeeds)}`,
+      primarySuppliers.length
+        ? `当前第一轮优先联系：${primarySuppliers.join('、')}`
+        : resolvedBrief.targetPriceMin === null &&
+            resolvedBrief.targetPriceMax === null &&
+            resolvedBrief.maxPurchasePrice === null &&
+            resolvedBrief.firstOrderQty === null &&
+            resolvedBrief.acceptableMoq === null
+          ? '当前只拿到 ASIN，先按产品路线初筛，后面补买家边界会更精准。'
+          : '当前还没有稳定 shortlist，先别放大询盘面。',
+    ],
+    judgmentRule: [
+      '页面数据只能判断像不像。',
+      '商家回复才能判断能不能接。',
+      '样品和小单才能判断靠不靠谱。',
+    ],
+  };
+}
+
+function buildDataBucketsPayload(buyerBrief) {
+  const resolvedBrief = resolveSourceBuyerBrief(buyerBrief);
+  return {
+    buyerPrepared: [
+      `目标售价区间：${formatBuyerRange(resolvedBrief.targetPriceMin, resolvedBrief.targetPriceMax, '$')}`,
+      `采购价上限：${formatBuyerSingleValue(resolvedBrief.maxPurchasePrice, '¥')}`,
+      `首批数量：${formatBuyerSingleValue(resolvedBrief.firstOrderQty, '', ' 件')}`,
+      `可接受 MOQ：${formatBuyerSingleValue(resolvedBrief.acceptableMoq, '', ' 件')}`,
+      `定制需求：${formatCustomizationNeeds(resolvedBrief.customizationNeeds)}`,
+    ],
+    pageObservable: [
+      '货型是否同路，价格带是否稳定',
+      '店铺垂直度、商家标签、商品池集中度',
+      '卖家、标题、价格、部分 MOQ / SKU / 属性字段',
+      '30 天订单、180 天买家、退款率、响应率、服务分',
+    ],
+    sellerVerified: [
+      '是否真能接目标规格和版本',
+      'MOQ、样品费、打样周期、量产交期',
+      `是否支持 ${formatCustomizationNeeds(resolvedBrief.customizationNeeds)}`,
+      '样品版本是否等于后续大货版本',
+      '是否能承接首批数量和后续补货节奏',
+    ],
+  };
+}
+
+function buildInquiryTemplate(buyerBrief, seed, benchmark, shortlist) {
+  const resolvedBrief = resolveSourceBuyerBrief(buyerBrief);
+  const hasBenchmark = benchmark?.detail?.asin && benchmark.detail.asin !== seed.detail.asin;
+  const noCustomization = resolvedBrief.customizationNeeds.includes('none');
+  const customizationText = noCustomization
+    ? '这轮先按标准款沟通，不先展开 Logo / 包装 /颜色 / 规格定制。'
+    : `这轮需要确认的定制点：${formatCustomizationNeeds(resolvedBrief.customizationNeeds)}。`;
+  const directReplyLine = noCustomization
+    ? '请你直接回复这几个点：1）是否有接近这条路的现货或稳定款；2）该款 MOQ、样品费、样品周期、大货周期；3）样品版本和大货版本是否一致；4）如果要压到目标价格，哪些条件需要配合。'
+    : '请你直接回复这几个点：1）是否有接近这条路的现货或稳定款；2）该款 MOQ、样品费、样品周期、大货周期；3）样品版本和大货版本是否一致；4）是否支持包装/贴标/颜色/规格调整；5）如果要压到目标价格，哪些条件需要配合。';
+  const supplierHint = shortlist.slice(0, 2).map((item) => item.seller).filter(Boolean).join('、');
+  const pricingLine =
+    resolvedBrief.targetPriceMin !== null || resolvedBrief.targetPriceMax !== null || resolvedBrief.maxPurchasePrice !== null
+      ? `买家目标售价区间是 ${formatBuyerRange(resolvedBrief.targetPriceMin, resolvedBrief.targetPriceMax, '$')}，当前采购价上限是 ${formatBuyerSingleValue(resolvedBrief.maxPurchasePrice, '¥')}。`
+      : '这轮买家价格带和采购上限还没锁定，先按同路款、版本边界和样品条件沟通。';
+  const orderLine =
+    resolvedBrief.firstOrderQty !== null || resolvedBrief.acceptableMoq !== null
+      ? `首批计划先做 ${formatBuyerSingleValue(resolvedBrief.firstOrderQty, '', ' 件')}，可接受 MOQ 先控制在 ${formatBuyerSingleValue(resolvedBrief.acceptableMoq, '', ' 件以内')}。`
+      : '首批数量和 MOQ 还没锁定，先看对方的最小起订、样品费和量产门槛。';
+
+  return [
+    '你好，我们正在找一条和 Amazon 目标款同路的高速吹风机供应。',
+    hasBenchmark
+      ? `当前参考款是 ${seed.detail.brand || seed.detail.asin}，我们同时拿 ${benchmark.detail.brand || benchmark.detail.asin} 做基准盘。`
+      : `当前先以 ${seed.detail.brand || seed.detail.asin} 作为 Amazon 锚点，本轮还没有稳定基准盘，所以先按同路款收第一轮供应。`,
+    pricingLine,
+    orderLine,
+    customizationText,
+    directReplyLine,
+    supplierHint ? `我们当前 shortlist 里也在同步联系 ${supplierHint}，所以希望你直接给清楚版本和承接边界。` : '如果这条路不匹配，也请直接说不适合，不需要泛泛报价。',
+  ].join('\n');
+}
+
+function buildInquiryKitPayload(buyerBrief, seed, benchmark, shortlist) {
+  const resolvedBrief = resolveSourceBuyerBrief(buyerBrief);
+  return {
+    template: buildInquiryTemplate(buyerBrief, seed, benchmark, shortlist),
+    questions: [
+      {
+        label: '承接能力',
+        strongSignal: '能直接讲清是否有同路款、当前在做哪些市场、能接哪些版本边界。',
+        mediumSignal: '表示可以做，但只能泛讲大概路线，需要继续追问细节。',
+        weakSignal: '只会说有货、可以做，但讲不清具体型号、版本和边界。',
+      },
+      {
+        label: 'MOQ / 打样',
+        strongSignal:
+          resolvedBrief.acceptableMoq !== null
+            ? `能明确 MOQ、样品费、是否可降到 ${resolvedBrief.acceptableMoq} 件以内。`
+            : '能明确 MOQ、样品费，以及首单和打样门槛。',
+        mediumSignal: '能给大概 MOQ，但样品和量产门槛还不清楚。',
+        weakSignal: 'MOQ 说不清，或只让你先下大货再看。',
+      },
+      {
+        label: '交期',
+        strongSignal: '样品周期、大货周期、补货节奏都能拆开讲清楚。',
+        mediumSignal: '能给出粗略周期，但没有前提条件。',
+        weakSignal: '只说很快、没问题，但讲不清具体时间和依赖条件。',
+      },
+      {
+        label: '定制能力',
+        strongSignal: `能逐项回复 ${formatCustomizationNeeds(resolvedBrief.customizationNeeds)} 是否支持，以及起订条件。`,
+        mediumSignal: '表示可以定制，但没有讲清版本、费用或前置条件。',
+        weakSignal: '什么都答应，但没有样品、案例或边界说明。',
+      },
+      {
+        label: '样品一致性',
+        strongSignal: '能明确说明样品版本是否等于大货版本，哪些参数一致、哪些会变。',
+        mediumSignal: '承诺样品可做，但还没说明和大货之间的关系。',
+        weakSignal: '样品和大货关系说不清，或只让先付钱再说。',
+      },
+    ],
+    keywordSignals: {
+      strong: ['同路款', '现货版本', '样品版本', '大货版本', '阶梯价', '交期', 'MOQ', 'OEM', 'ODM'],
+      risk: ['都可以', '没问题', '差不多', '先下单', '后面再说', '图上都有', '随便做'],
+    },
+    scoreItems: [
+      { label: '承接能力', strong: 20, medium: 12, weak: 0 },
+      { label: 'MOQ / 打样', strong: 20, medium: 12, weak: 0 },
+      { label: '交期清晰度', strong: 20, medium: 12, weak: 0 },
+      { label: '定制能力', strong: 20, medium: 12, weak: 0 },
+      { label: '样品一致性', strong: 20, medium: 12, weak: 0 },
+    ],
+  };
+}
+
+function buildExecutionStepsPayload(buyerBrief, shortlist) {
+  const resolvedBrief = resolveSourceBuyerBrief(buyerBrief);
+  const topSupplier = shortlist[0]?.seller || null;
+  const secondSupplier = shortlist[1]?.seller || null;
+  const outreachStep =
+    topSupplier && secondSupplier
+      ? `先发标准询盘给 ${topSupplier}、${secondSupplier}，重点追问承接能力、MOQ、交期和样品版本。`
+      : topSupplier
+        ? `先发标准询盘给 ${topSupplier}，再补第二家备选商家，重点追问承接能力、MOQ、交期和样品版本。`
+        : '先继续补 shortlist，再发第一轮标准询盘；在名单未收紧前，不直接批量问价。';
+  return [
+    resolvedBrief.targetPriceMin !== null ||
+    resolvedBrief.targetPriceMax !== null ||
+    resolvedBrief.maxPurchasePrice !== null ||
+    resolvedBrief.firstOrderQty !== null
+      ? `先补买家目标：售价 ${formatBuyerRange(resolvedBrief.targetPriceMin, resolvedBrief.targetPriceMax, '$')}、采购价上限 ${formatBuyerSingleValue(resolvedBrief.maxPurchasePrice, '¥')}、首批 ${formatBuyerSingleValue(resolvedBrief.firstOrderQty, '', ' 件')}。`
+      : '先补买家目标：如果暂时只有 ASIN，就先出第一页寻源结果，后面再补价格带、首单数量和 MOQ。 ',
+    '用页面数据做初筛：先看货型、价格带、店铺垂直度、订单、买家数和服务信号。',
+    outreachStep,
+    '只把强回复商家推进到样品阶段，弱回复或边界不清的直接降级。',
+    '样品阶段先验规格、做工、包装和版本一致性，再决定是否进入小单。',
+    '小单阶段验证交期、补货和异常处理，最后再定主供，不在页面初筛阶段提前下结论。',
+  ];
+}
+
+function buildVisualEvidenceFromCandidates(candidateRows) {
+  return candidateRows
+    .filter((item) => item.image)
+    .slice(0, 4)
+    .map((item) => ({
+      image: item.image,
+      caption: `${item.seller} / ${truncateText(item.title || item.specSummary, 80)} / ${item.priceSummary}`,
+      offerId: item.offerId,
+    }));
+}
+
+function buildRiskChecklistFromSource(seedThemes, benchmarkThemes, candidateRows, degraded) {
+  const reviewRisks = [...seedThemes, ...benchmarkThemes]
+    .map((theme) => String(theme || '').trim())
+    .filter(Boolean)
+    .map((theme) => `${theme}：样品阶段要专项验证`);
+  const candidateRisks = [
+    ...new Set(candidateRows.flatMap((item) => item.riskFlags).filter(Boolean)),
+  ].slice(0, 4);
+
+  return [
+    ...reviewRisks.slice(0, 3),
+    ...candidateRisks,
+    degraded ? 'Aoxia 深挖未完成，本次不能把 shortlist 当成完整寻源结论。' : '',
+  ].filter(Boolean);
+}
+
+function buildSamplePlanFromShortlist(shortlist) {
+  const first = shortlist[0];
+  const second = shortlist[1];
+
+  return [
+    first
+      ? `先打样 ${first.seller}（${first.offerId}），优先核对规格、做工、包装和 MOQ 是否可落样单。`
+      : '先选 1 家低 MOQ 候选做首轮打样，避免同时铺太多样品。',
+    second
+      ? `同步联系 ${second.seller}（${second.offerId}），作为第二条备选轨，避免单一供应商依赖。`
+      : '至少补出第二家备选供应商，再决定是否扩大询盘面。',
+    '样品验收必须回到 Amazon 目标款：先核对结构 / 规格 / 包装，再谈成本和放量。',
+  ];
+}
+
+function buildServerSourceKillCriteriaItems(reviewBlocks) {
+  const negatives = reviewBlocks.flatMap((block) => block?.negatives || []);
+
+  return [
+    ...new Set([
+      ...negatives.map((item) => `${item} 问题如果在样品里复现，就先暂停推进`),
+      '如果 shortlist 仍然只能靠标题猜测，而不能补齐 SKU / MOQ / 属性，就先暂停。',
+      '如果同一目标款在不同搜索词下无法互相印证，不要只因低价继续推进。',
+    ]),
+  ].slice(0, 5);
+}
+
+function buildFactBoundary(providerTrace, candidateRows, degraded) {
+  const aoxiaTrace = providerTrace.find((item) => item.provider === 'Aoxia MCP');
+  const sorftimeTrace = providerTrace.find((item) => item.provider === 'Sorftime MCP');
+  const sellerVerified = aoxiaTrace?.verifiedFields.includes('卖家');
+  const verifiedFacts = [
+    sorftimeTrace?.verifiedFields.length
+      ? `${sorftimeTrace.verifiedFields.join('、')}来自 Sorftime MCP。`
+      : '',
+    candidateRows.length
+      ? sellerVerified
+        ? '1688 候选标题、价格和卖家字段来自 Aoxia MCP 返回。'
+        : '1688 候选标题和价格来自 Aoxia MCP；当前接口未返回店铺名。'
+      : '本次 1688 侧只拿到有限样本，未形成稳定候选池。',
+    providerTrace.some((item) => item.provider === 'Aoxia MCP' && item.verifiedFields.includes('MOQ'))
+      ? 'Aoxia 详情查询已补到 MOQ / SKU / 属性等字段。'
+      : '',
+  ].filter(Boolean);
+
+  const inferences = [
+    '匹配度、轨道归类和 shortlist 排序属于规则推断，不是平台原生评分。',
+    '是否先打样、先联系谁，是在当前证据边界内的执行建议。',
+    degraded ? 'Aoxia 不可用时，Sorftime 只作为 1688 列表页补位，不替代详情核验。' : '',
+  ].filter(Boolean);
+
+  return {
+    verifiedFacts,
+    inferences,
+    notPromised: SOURCE_NOT_PROMISED,
+  };
+}
+
+async function buildAoxiaSourceIntel({
+  seedDetail,
+  benchmarkDetail,
+  keywordSets,
+  sorftimeSearchNames,
+  sorftimeSourcing,
+}) {
+  if (!isAoxiaConfigured()) {
+    return {
+      providerTrace: [
+        {
+          provider: 'Aoxia MCP',
+          tools: [],
+          status: 'unavailable',
+          verifiedFields: [],
+        },
+      ],
+      searchPath: [],
+      candidateRows: [],
+      visualEvidence: [],
+      shortlist: [],
+      degraded: true,
+      error: 'AOXIA_ACCESS_KEY / AOXIA_SECRET_KEY 未配置。',
+    };
+  }
+
+  let aoxia = null;
+
+  try {
+    aoxia = await createAoxiaClient();
+    const toolMap = aoxia.tools;
+    const searchTerms = buildAoxiaSearchTerms(seedDetail, benchmarkDetail, sorftimeSearchNames, keywordSets);
+    const activeSearchTerms = searchTerms.slice(0, process.env.VERCEL ? 2 : 6);
+    const searchPath = [];
+    const gatheredItems = [];
+    const usedTools = new Set();
+
+    const searchResults = await Promise.all(activeSearchTerms.map(async (term) => {
+      const toolDef = toolMap.get('keywordSearchProduct');
+      const variants = [
+        buildKeywordSearchArgs(toolDef, term, 1),
+        { keyword: term, page: 1 },
+        { query: term, page: 1 },
+      ];
+
+      try {
+        const result = await callAoxiaToolWithVariants(aoxia, 'keywordSearchProduct', variants);
+        const items = normalizeAoxiaToolItems(result.text, term, 'keywordSearchProduct');
+        const directRatio = items.length
+          ? items.filter((item) => !/配件|检测|服务|认证|教程/i.test(item.title || '')).length / items.length
+          : 0;
+
+        return {
+          usedTool: 'keywordSearchProduct',
+          items,
+          searchPathItem: {
+            term,
+            source: 'Aoxia keywordSearchProduct',
+            precision: classifySearchPrecision(term),
+            notes: items.length
+              ? `命中 ${items.length} 条样本，可读主货占比约 ${Math.round(directRatio * 100)}%。`
+              : '本轮没有拿到可读样本。',
+          },
+        };
+      } catch (error) {
+        return {
+          usedTool: '',
+          items: [],
+          searchPathItem: {
+            term,
+            source: 'Aoxia keywordSearchProduct',
+            precision: classifySearchPrecision(term),
+            notes: `调用失败：${error instanceof Error ? error.message : String(error)}`,
+          },
+        };
+      }
+    }));
+
+    searchResults.forEach((entry) => {
+      if (entry.usedTool) {
+        usedTools.add(entry.usedTool);
+      }
+      searchPath.push(entry.searchPathItem);
+      gatheredItems.push(...entry.items);
+    });
+
+    const dedupedItems = dedupeAoxiaItems(gatheredItems);
+    const polluted = dedupedItems.length > 0 && dedupedItems.filter((item) => item.matchedTerms?.length >= 1).length <= 2;
+
+    if (polluted && seedDetail.image && toolMap.has('imageSearchProduct')) {
+      try {
+        const imageResult = await callAoxiaToolWithVariants(aoxia, 'imageSearchProduct', [
+          buildImageSearchArgs(toolMap.get('imageSearchProduct'), seedDetail.image, 1),
+          { imageUrl: seedDetail.image, page: 1 },
+          { url: seedDetail.image, page: 1 },
+        ]);
+        usedTools.add('imageSearchProduct');
+        const imageItems = normalizeAoxiaToolItems(imageResult.text, 'Amazon 主图反查', 'imageSearchProduct');
+        gatheredItems.push(...imageItems);
+        searchPath.push({
+          term: 'Amazon 主图反查',
+          source: 'Aoxia imageSearchProduct',
+          precision: 'high',
+          notes: imageItems.length ? `图搜补到 ${imageItems.length} 条近邻样本。` : '图搜没有补到可读样本。',
+        });
+      } catch (error) {
+        searchPath.push({
+          term: 'Amazon 主图反查',
+          source: 'Aoxia imageSearchProduct',
+          precision: 'high',
+          notes: `图搜失败：${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    }
+
+    const fusedItems = dedupeAoxiaItems(gatheredItems)
+      .map((item) => ({
+        ...item,
+        matchedTerms: item.matchedTerms || [],
+      }))
+      .slice(0, 10);
+
+    const detailLimit = process.env.VERCEL ? 0 : 5;
+    const detailedCandidates = await Promise.all(
+      fusedItems.slice(0, detailLimit).map(async (item) => {
+        if (!item.offerId || !toolMap.has('productDetailQuery')) {
+          return { ...item, detail: null };
+        }
+
+        try {
+          const detailResult = await callAoxiaToolWithVariants(aoxia, 'productDetailQuery', [
+            buildProductIdArgs(toolMap.get('productDetailQuery'), item.offerId),
+            { productId: item.offerId },
+            { offerId: item.offerId },
+          ]);
+          usedTools.add('productDetailQuery');
+          const detailPayload = parseMaybeJsonBlock(detailResult.text, {});
+          const detailRecord = coerceArrayRecords(detailPayload)[0] || detailPayload || {};
+          return {
+            ...item,
+            detail: normalizeAoxiaDetail(detailRecord, item),
+          };
+        } catch (error) {
+          return {
+            ...item,
+            detail: null,
+            detailError: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }),
+    );
+
+    const recommendationItems = [];
+    if (!process.env.VERCEL && toolMap.has('relevantProductRecommend')) {
+      for (const item of detailedCandidates.slice(0, 2)) {
+        if (!item.offerId) {
+          continue;
+        }
+        try {
+          const recommendResult = await callAoxiaToolWithVariants(aoxia, 'relevantProductRecommend', [
+            buildProductIdArgs(toolMap.get('relevantProductRecommend'), item.offerId, 1),
+            { productId: item.offerId, page: 1 },
+            { offerId: item.offerId, page: 1 },
+          ]);
+          usedTools.add('relevantProductRecommend');
+          recommendationItems.push(
+            ...normalizeAoxiaToolItems(recommendResult.text, `相关扩盘:${item.offerId}`, 'relevantProductRecommend'),
+          );
+        } catch (error) {
+          continue;
+        }
+      }
+    }
+
+    const allCandidates = dedupeAoxiaItems([
+      ...(detailedCandidates.length ? detailedCandidates : fusedItems),
+      ...recommendationItems,
+    ]).map((candidate) => {
+      const detailMatch = detailedCandidates.find((item) => item.offerId && item.offerId === candidate.offerId);
+      return {
+        ...candidate,
+        detail: detailMatch?.detail || null,
+      };
+    });
+
+    const candidateRows = buildSourceCandidateRows(
+      allCandidates,
+      sorftimeSourcing.sourceTargets,
+      sorftimeSourcing.priceBand,
+      buildSourceAnchors(seedDetail, benchmarkDetail),
+    );
+    const shortlist = buildShortlistFromCandidateRows(candidateRows);
+    const visualEvidence = buildVisualEvidenceFromCandidates(candidateRows);
+    const detailVerified = detailedCandidates.some((item) => item.detail?.attributeText || item.detail?.skuText);
+    const sellerVerified = detailedCandidates.some((item) => item.detail?.seller || item.seller);
+    const listVerifiedFields = ['1688 标题', '价格', ...(sellerVerified ? ['卖家'] : [])];
+
+    return {
+      providerTrace: [
+        {
+          provider: 'Aoxia MCP',
+          tools: [...usedTools],
+          status: detailVerified ? 'ok' : candidateRows.length ? 'partial' : 'fallback',
+          verifiedFields: detailVerified
+            ? [...listVerifiedFields, 'MOQ', 'SKU', '属性', '图集']
+            : candidateRows.length
+              ? listVerifiedFields
+              : [],
+        },
+      ],
+      searchPath,
+      candidateRows,
+      visualEvidence,
+      shortlist,
+      degraded: !detailVerified,
+      error: detailVerified ? '' : aoxia.getStderr() || '',
+    };
+  } catch (error) {
+    return {
+      providerTrace: [
+        {
+          provider: 'Aoxia MCP',
+          tools: [],
+          status: 'fallback',
+          verifiedFields: [],
+        },
+      ],
+      searchPath: [],
+      candidateRows: [],
+      visualEvidence: [],
+      shortlist: [],
+      degraded: true,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    if (aoxia) {
+      await aoxia.close();
+    }
+  }
+}
+
+function buildFallbackSourceCandidateRows(sourcing) {
+  return sourcing.recommendedSuppliers.map((supplier, index) => ({
+    offerId: extractOfferId(supplier.bestItem?.url || supplier.bestItem?.title),
+    seller: supplier.seller,
+    fitScore: Number((supplier.score || 0).toFixed(1)),
+    matchedTerms: supplier.searchNames || [],
+    specSummary: truncateText(supplier.bestItem?.title || '当前只有 Sorftime 列表页样本。', 88),
+    moq: '待补 Aoxia 详情',
+    priceSummary: supplier.supplierPriceBand
+      ? supplier.supplierPriceBand.min === supplier.supplierPriceBand.max
+        ? `约 ¥${supplier.supplierPriceBand.min}`
+        : `约 ¥${supplier.supplierPriceBand.min} - ¥${supplier.supplierPriceBand.max}`
+      : '价格带待确认',
+    whyMatch: supplier.reasonLines?.[0] || '当前更多是价格带和关键词命中信号，仍要补详情。',
+    riskFlags: ['Aoxia 深挖未完成'],
+    track: index === 0 ? '低 MOQ 打样轨' : index === 1 ? '高匹配工厂轨' : '观察备选',
+    image: supplier.bestItem?.image || '',
+    url: supplier.offerUrl || '',
+    title: supplier.bestItem?.title || '',
+    decisionLabel: '可继续沟通',
+    nextChecks: ['补 Aoxia 详情字段后再决定是否进入打样。'],
+  }));
+}
+
+function buildSourceReportPayload({
+  seed,
+  benchmark,
+  keywordSets,
+  sourcing,
+  aoxiaIntel,
+  reviewBlocks,
+  buyerBrief,
+}) {
+  const resolvedBrief = resolveSourceBuyerBrief(buyerBrief);
+  const fallbackRows = buildFallbackSourceCandidateRows(sourcing);
+  const rawCandidateRows = aoxiaIntel.candidateRows.length ? aoxiaIntel.candidateRows : fallbackRows;
+  const candidateRows = applyBuyerBriefToCandidateRows(rawCandidateRows, resolvedBrief);
+  const shortlist = buildShortlistFromCandidateRows(candidateRows);
+  const degraded = aoxiaIntel.degraded || !aoxiaIntel.candidateRows.length;
+  const providerTrace = [
+    ...aoxiaIntel.providerTrace,
+    {
+      provider: 'Sorftime MCP',
+      tools: ['product_detail', 'product_reviews', 'product_traffic_terms', 'competitor_product_keywords', 'ali1688_similar_product'],
+      status: 'ok',
+      verifiedFields: ['Amazon 详情', '评论', '流量词', '竞品关键词', '1688 列表页样本'],
+    },
+  ];
+  const searchPath = [
+    ...aoxiaIntel.searchPath,
+    ...sourcing.searchNames.map((term) => ({
+      term,
+      source: 'Sorftime search seed',
+      precision: classifySearchPrecision(term),
+      notes: '由 Amazon 侧种子款、基准款与关键词信号推导出的第一轮供给词。',
+    })),
+  ];
+  const budgetTight =
+    resolvedBrief.maxPurchasePrice !== null &&
+    candidateRows.some((row) => {
+      const priceValues = readNumericTokens(row.priceSummary);
+      return priceValues.length > 0 && Math.min(...priceValues) > resolvedBrief.maxPurchasePrice;
+    });
+  const verdict = buildSourceVerdictPayload(
+    candidateRows,
+    shortlist,
+    providerTrace,
+    degraded ? 'Aoxia 深挖未完成，本次自动回退为轻量寻源支撑。' : '',
+  );
+
+  return {
+    providerTrace,
+    searchPath,
+    candidateRows,
+    visualEvidence: aoxiaIntel.visualEvidence.length ? aoxiaIntel.visualEvidence : buildVisualEvidenceFromCandidates(candidateRows),
+    verdict: {
+      ...verdict,
+      highlights: [
+        ...verdict.highlights,
+        budgetTight ? `当前部分候选已高于买家采购价上限 ¥${resolvedBrief.maxPurchasePrice}。` : '',
+        resolvedBrief.customizationNeeds.includes('none') ? '本轮先按标准款沟通，不先放大定制复杂度。' : '',
+      ].filter(Boolean),
+    },
+    shortlist,
+    riskChecklist: buildRiskChecklistFromSource(
+      reviewBlocks[0]?.negatives || [],
+      reviewBlocks[1]?.negatives || [],
+      candidateRows,
+      degraded,
+    ),
+    samplePlan: buildSamplePlanFromShortlist(shortlist),
+    killCriteria: [
+      '如果前 2 个候选都无法补齐规格 / MOQ / 包装能力，就先暂停推进。',
+      '如果详情页字段不足，且不同搜索词之间无法互相印证，不要把它当成稳定工厂线索。',
+      '如果样品阶段无法回到 Amazon 目标款的核心规格，就不要只因为低价继续推进。',
+      ...buildServerSourceKillCriteriaItems(reviewBlocks).slice(0, 3),
+    ],
+    factBoundary: buildFactBoundary(providerTrace, candidateRows, degraded),
+    buyerContext: buildBuyerContextPayload(resolvedBrief, shortlist),
+    dataBuckets: buildDataBucketsPayload(resolvedBrief),
+    inquiryKit: buildInquiryKitPayload(resolvedBrief, seed, benchmark, shortlist),
+    executionSteps: buildExecutionStepsPayload(resolvedBrief, shortlist),
+  };
 }
 
 function summarizeCandidateRole(candidate, index) {
@@ -4132,40 +5555,108 @@ function buildFindModeReport({ session, site, left, right, categoryReport, keywo
   };
 }
 
-function buildSourceModeReport({ session, site, left, right, categoryReport, keywordIntel, sourcing, extraNote, competitorCandidates }) {
+function buildSourceModeReport({
+  session,
+  site,
+  left,
+  right,
+  categoryReport,
+  keywordIntel,
+  sourcing,
+  sourceReport,
+  extraNote,
+  competitorCandidates,
+}) {
   const keywordSets = chooseKeywordSets([left, right]);
   const genericKeywordPair = buildGenericKeywordPair(left, right, keywordSets);
   const modeFocus = buildSourceModeFocus(left, right, categoryReport.stats, sourcing);
+  const reviewBlocks = buildSourceReviewBlocks(left, right);
+  const hasBenchmark = right?.detail?.asin && right.detail.asin !== left.detail.asin;
+  const hasAoxia = sourceReport.providerTrace.some(
+    (item) => item.provider === 'Aoxia MCP' && item.status !== 'unavailable' && item.status !== 'fallback',
+  );
+  const sourceLabel = hasBenchmark
+    ? hasAoxia
+      ? 'Aoxia 1688 MCP + Sorftime MCP'
+      : 'Aoxia 1688 MCP 不可用 / Sorftime 补位'
+    : hasAoxia
+      ? 'Aoxia 1688 MCP + Sorftime MCP'
+      : 'Aoxia 1688 MCP 不可用 / Sorftime 补位';
+  const sourceTitle = sourceReport.shortlist.length
+    ? `${left.detail.brand || left.detail.asin} 这条路先联系 ${sourceReport.shortlist
+        .slice(0, 2)
+        .map((item) => item.seller)
+        .join('、')}。`
+    : `${left.detail.brand || left.detail.asin} 这条路先别急着放大询盘，先继续收紧 shortlist。`;
+  const sourceSummary = [sourceReport.verdict.summary, ...sourceReport.verdict.highlights, extraNote]
+    .filter(Boolean)
+    .join(' ');
+  const heroCards = [
+    {
+      label: '寻源结论',
+      value: sourceReport.shortlist.length ? '可以推进第一轮寻源' : '先继续收紧口径',
+      desc: sourceReport.verdict.summary,
+    },
+    {
+      label: '候选池',
+      value: sourceReport.candidateRows.length ? `${formatNumber(sourceReport.candidateRows.length)} 条候选` : '候选不足',
+      desc: sourceReport.candidateRows.length
+        ? `已形成 ${formatNumber(sourceReport.candidateRows.length)} 条候选货盘，接下来不再停留在泛样本层。`
+        : '当前还没有稳定候选池，先别进入大面积询盘。',
+    },
+    {
+      label: 'Shortlist',
+      value: sourceReport.shortlist.length ? `${formatNumber(sourceReport.shortlist.length)} 家` : '待补',
+      desc: sourceReport.shortlist.length
+        ? `第一轮 shortlist 已经收紧到 ${formatNumber(sourceReport.shortlist.length)} 家。`
+        : '当前还没有足够可信的厂家 shortlist。',
+    },
+  ];
 
   return {
     session,
     report: {
-      meta: buildBaseReportMeta('source', getAmazonMarketplaceLabel(site)),
-      title: buildSourceTitle(left, right, categoryReport.stats, sourcing),
-      summary: buildSourceSummary(left, right, categoryReport.stats, keywordIntel, sourcing, extraNote),
+      meta: buildBaseReportMeta('source', getAmazonMarketplaceLabel(site), sourceLabel),
+      title: sourceTitle,
+      summary: sourceSummary,
       labels: {
         left: left.detail.brand || left.detail.asin,
-        right: right.detail.brand || right.detail.asin,
+        right: hasBenchmark ? right.detail.brand || right.detail.asin : '基准盘待补',
       },
       sectionCopy: buildSourceSectionCopy(left, right, sourcing),
-      heroCards: buildSourceHeroCards(left, right, categoryReport.stats, sourcing),
+      heroCards,
       navItems: buildNavItems('source'),
       modeFocusTitle: modeFocus.title,
       modeFocusCards: modeFocus.cards,
       candidatePoolTitle: '推荐厂家',
-      candidatePoolCards: buildSourceCandidatePoolCards(sourcing),
+      candidatePoolCards: buildSourceCandidatePoolCards(sourceReport.candidateRows),
       products: [
         buildProductCard(left.detail, summarizeReviewThemes(left.positiveReviews)),
-        buildProductCard(right.detail, summarizeReviewThemes(right.positiveReviews)),
+        hasBenchmark
+          ? buildProductCard(right.detail, summarizeReviewThemes(right.positiveReviews))
+          : buildMarketSummaryCard({
+              title: 'Amazon 基准盘待补',
+              brand: '轻量寻源支撑',
+              seller: getAmazonMarketplaceLabel(site),
+              rank: '当前未锁定',
+              description: '这次先按种子 ASIN 自身的需求词、评论约束和 1688 供给样本出第一轮寻源报告，后续再补稳定基准盘。',
+              metrics: [
+                { label: 'Anchor', value: left.detail.brand || left.detail.asin, sub: '当前 Amazon 锚点' },
+                { label: 'Benchmark', value: '待补', sub: '稳定竞对或主流款后补' },
+                { label: 'Mode', value: 'Light Source', sub: '先输出可执行寻源报告' },
+                { label: 'Next', value: '补竞对样本', sub: '后续再收紧目标款' },
+              ],
+            }),
       ],
       comparisonRows: buildSourceComparisonRows(left, right, genericKeywordPair, sourcing, categoryReport.stats),
       categoryCards: buildCategoryCards(categoryReport.stats, left, right),
       categoryRows: buildCategoryRows(left, right, categoryReport.stats),
-      trafficColumns: buildSourceTrafficColumns(left, right, keywordSets, keywordIntel, sourcing),
-      trafficInsight: buildSourceTrafficInsight(left, right, categoryReport.stats, keywordIntel, sourcing),
-      reviewBlocks: buildSourceReviewBlocks(left, right),
-      actionCards: buildSourceActionCards(left, right, keywordSets, sourcing, categoryReport.stats),
-      roadmapSteps: buildSourceRoadmapSteps(left, right, keywordSets, sourcing),
+      trafficColumns: buildSourceTrafficColumns(left, right, keywordSets, keywordIntel, sourcing, sourceReport),
+      trafficInsight: buildSourceTrafficInsight(left, right, categoryReport.stats, keywordIntel, sourcing, sourceReport),
+      reviewBlocks,
+      actionCards: buildSourceActionCards(left, right, keywordSets, sourceReport, categoryReport.stats),
+      roadmapSteps: buildSourceRoadmapSteps(left, right, keywordSets, sourceReport),
+      sourceReport,
     },
   };
 }
@@ -4237,6 +5728,59 @@ export async function buildLiveReport(sessionInput) {
     });
   }
 
+  if (sessionInput.mode === 'source' && process.env.VERCEL) {
+    const seedAsin = sessionInput.asins[0];
+    const seed = await fetchSourceAnchorDataset(seedAsin, site);
+    const keywordSets = chooseKeywordSets([seed]);
+    const sourceSearchNames = collectSourceSearchNames(seed.detail, keywordSets);
+    const sourcing = analyzeSourcing(sourceSearchNames, [], seed.detail, seed.detail, keywordSets);
+    const reviewBlocks = buildSourceReviewBlocks(seed, seed);
+    const aoxiaIntel = await buildAoxiaSourceIntel({
+      seedDetail: seed.detail,
+      benchmarkDetail: seed.detail,
+      keywordSets,
+      sorftimeSearchNames: sourceSearchNames,
+      sorftimeSourcing: sourcing,
+    });
+    const sourceReport = buildSourceReportPayload({
+      seed,
+      benchmark: seed,
+      keywordSets,
+      sourcing,
+      aoxiaIntel,
+      reviewBlocks,
+      buyerBrief: sessionInput.buyerBrief,
+    });
+    const quickProviderTrace = [
+      ...aoxiaIntel.providerTrace,
+      {
+        provider: 'Sorftime MCP',
+        tools: ['product_detail'],
+        status: 'ok',
+        verifiedFields: ['Amazon 详情'],
+      },
+    ];
+    sourceReport.providerTrace = quickProviderTrace;
+    sourceReport.factBoundary = buildFactBoundary(
+      quickProviderTrace,
+      sourceReport.candidateRows,
+      aoxiaIntel.degraded,
+    );
+
+    return buildSourceModeReport({
+      session: { ...sessionInput, asins: [seedAsin], query: seedAsin },
+      site,
+      left: seed,
+      right: seed,
+      categoryReport: { topProducts: [], stats: {} },
+      keywordIntel: [],
+      sourcing,
+      sourceReport,
+      extraNote: `本轮以 ${seedAsin} 作为 Amazon 锚点，Aoxia 直接返回 1688 候选货盘。`,
+      competitorCandidates: [],
+    });
+  }
+
   const seedAsin = sessionInput.asins[0];
   const seed = await fetchProductDataset(seedAsin, site);
   const categoryReportText = seed.detail.nodeId
@@ -4246,11 +5790,12 @@ export async function buildLiveReport(sessionInput) {
   const competitorCandidates = await findCompetitorCandidates(seed, categoryReport, site);
   const competitor = competitorCandidates[0];
 
-  if (!competitor?.detail?.asin) {
+  if (!competitor?.detail?.asin && sessionInput.mode !== 'source') {
     throw new Error('没有从当前类目里找到足够可信的竞对样本，请更换 ASIN 再试。');
   }
 
-  const benchmark = await fetchProductDataset(competitor.detail.asin, site);
+  const hasBenchmark = Boolean(competitor?.detail?.asin);
+  const benchmark = hasBenchmark ? await fetchProductDataset(competitor.detail.asin, site) : seed;
   const keywordSets = chooseKeywordSets([seed, benchmark]);
   const keywordIntel = await fetchKeywordIntel(site, collectKeywordSeeds(keywordSets));
 
@@ -4269,16 +5814,38 @@ export async function buildLiveReport(sessionInput) {
 
   const sourceSearchNames = collectSourceSearchNames(seed.detail, keywordSets);
   const sourcing = await fetchSourcingIntel(sourceSearchNames, seed.detail, benchmark.detail, keywordSets);
+  const reviewBlocks = buildSourceReviewBlocks(seed, benchmark);
+  const aoxiaIntel = await buildAoxiaSourceIntel({
+    seedDetail: seed.detail,
+    benchmarkDetail: benchmark.detail,
+    keywordSets,
+    sorftimeSearchNames: sourceSearchNames,
+    sorftimeSourcing: sourcing,
+  });
+  const sourceReport = buildSourceReportPayload({
+    seed,
+    benchmark,
+    keywordSets,
+    sourcing,
+    aoxiaIntel,
+    reviewBlocks,
+    buyerBrief: sessionInput.buyerBrief,
+  });
 
   return buildSourceModeReport({
-    session: { ...sessionInput, asins: [seedAsin, competitor.detail.asin], query: `${seedAsin}, ${competitor.detail.asin}` },
+    session: hasBenchmark
+      ? { ...sessionInput, asins: [seedAsin, competitor.detail.asin], query: `${seedAsin}, ${competitor.detail.asin}` }
+      : { ...sessionInput, asins: [seedAsin], query: seedAsin },
     site,
     left: seed,
     right: benchmark,
     categoryReport,
     keywordIntel,
     sourcing,
-    extraNote: `Amazon 侧先拿 ${competitor.detail.asin} 定义目标款，1688 侧再用 “${sourceSearchNames.join(' / ')}” 拉供给，并只保留第一轮更值得联系的厂家 shortlist。`,
+    sourceReport,
+    extraNote: hasBenchmark
+      ? `Amazon 侧先拿 ${competitor.detail.asin} 定义目标款，1688 侧再用 “${sourceSearchNames.join(' / ')}” 拉第一轮供给词，再交给 Aoxia 深挖详情与 shortlist。`
+      : `当前还没有稳定竞对样本，这次先按种子 ASIN 自身的需求词 “${sourceSearchNames.join(' / ')}” 拉第一轮供给词，直接输出轻量寻源报告。`,
     competitorCandidates,
   });
 }

@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
+import { isAoxiaConfigured, resolveAoxiaConfigSource } from './server/aoxia-client.js';
 import { buildLiveReport } from './server/report-service.js';
 import { resolveSorftimeMcpUrl } from './server/sorftime-client.js';
 
@@ -16,6 +17,15 @@ const __dirname = path.dirname(__filename);
 const isDev = process.argv.includes('--dev');
 const port = Number(process.env.PORT || 3000);
 
+function hasValidSourceBuyerBrief(session) {
+  const brief = session?.buyerBrief;
+  return Boolean(
+    brief &&
+      typeof brief.asinOrUrl === 'string' &&
+      brief.asinOrUrl.trim(),
+  );
+}
+
 async function createApp() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
@@ -26,11 +36,15 @@ async function createApp() {
       res.json({
         ok: true,
         hasDataService: true,
+        hasAoxiaService: isAoxiaConfigured(),
+        aoxiaSource: resolveAoxiaConfigSource(),
       });
     } catch (error) {
       res.status(500).json({
         ok: false,
         error: error.message || '数据服务未配置。',
+        hasAoxiaService: isAoxiaConfigured(),
+        aoxiaSource: resolveAoxiaConfigSource(),
       });
     }
   });
@@ -40,9 +54,10 @@ async function createApp() {
       const session = req.body?.session;
       const hasAsins = Array.isArray(session?.asins) && session.asins.length > 0;
       const hasSpaceQuery = session?.mode === 'space' && typeof session?.query === 'string' && session.query.trim();
-      if (!session?.mode || (!hasAsins && !hasSpaceQuery)) {
+      const missingSourceBrief = session?.mode === 'source' && !hasValidSourceBuyerBrief(session);
+      if (!session?.mode || (!hasAsins && !hasSpaceQuery) || missingSourceBrief) {
         res.status(400).json({
-          error: '请求缺少有效的分析参数。',
+          error: missingSourceBrief ? '去寻源模式缺少完整的买家寻源简报。' : '请求缺少有效的分析参数。',
         });
         return;
       }
